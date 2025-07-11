@@ -1,4 +1,4 @@
-use log::{info, trace, warn};
+use log::info;
 use librfc_rust::{Connection, Value};
 use env_logger;
 use env_logger::Env;
@@ -14,14 +14,16 @@ fn main() {
                 .destination("sap")
                 .connect();
     assert!(c.is_connected());
-    let f = c.function("RFC_FUNCTION_SEARCH");
-    f.set("FUNCNAME", "Z*");
+    let f = c.function("DOCU_GET");
+    f.set("ID", "SD");
+    f.set("LANGU", "DE");
+    f.set("OBJECT", "ABAPCOMPUTE_STRING_FORMAT_OPTIONS");
     f.execute();
-    info!("{:?}", f.get("FUNCTIONS"));
-    if let Value::Table(functions) = f.get("FUNCTIONS") {
+    info!("{:?}", f.get("LINE"));
+    if let Value::Table(functions) = f.get("LINE") {
         for row in functions {
             if let Value::Structure(s) = row {
-                info!("{:?}", s.get("FUNCNAME"));
+                info!("{:2} {}", s.get("TDFORMAT"), s.get("TDLINE"));
             }
         }
     }

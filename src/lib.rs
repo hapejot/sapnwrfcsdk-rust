@@ -4,7 +4,7 @@
 
 use lazy_static::*;
 use std::{fmt::Display, sync::Mutex};
-use log::{info, trace, warn};
+use log::trace;
 
 lazy_static! {
     static ref CONNECT_COUNT: Mutex<i32> = Mutex::new(0);
@@ -278,7 +278,7 @@ pub enum Value {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::String(_) => todo!(),
+            Value::String(s) => write!(f, "{}", String::from(s)),
             Value::Int(i) => write!(f, "{i}"),
             Value::Table(_) => todo!(),
             Value::Structure(_) => todo!(),
