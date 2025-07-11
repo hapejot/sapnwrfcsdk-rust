@@ -14,7 +14,7 @@ struct Args {
 }
 
 
-fn main() {
+fn main() -> Result<(), String>{
     let args = Args::parse();
     env_logger::Builder::from_env(Env::default()
                         .default_filter_or("info"))
@@ -22,22 +22,23 @@ fn main() {
                     .init();
     let c = Connection::new()
                 .destination("sap")
-                .connect();
+                .connect()?;
     assert!(c.is_connected());
-    let f = c.function("DOCU_GET");
-    f.set("ID", args.id.as_str());
-    f.set("LANGU", args.language.as_str());
-    f.set("OBJECT", args.object.as_str());
-    f.execute();
-    if let Value::Table(functions) = f.get("LINE") {
+    let f = c.function("DOCU_GET")?;
+    f.set("ID", args.id.to_uppercase().as_str())?;
+    f.set("LANGU", args.language.to_uppercase().as_str())?;
+    f.set("OBJECT", args.object.to_uppercase().as_str())?;
+    f.execute()?;
+    if let Value::Table(functions) = f.get("LINE")? {
         for row in functions {
             if let Value::Structure(s) = row {
-                let format = format!("{:2}", s.get("TDFORMAT").to_string());
-                let line = format!("{:}", s.get("TDLINE").to_string());
+                let format = format!("{:2}", s.get("TDFORMAT")?.to_string());
+                let line = format!("{:}", s.get("TDLINE")?.to_string());
                 stdout().write(format.as_bytes()).unwrap();
                 stdout().write(line.as_bytes()).unwrap();
                 stdout().write(b"\n").unwrap();
             }
         }
     }
+    Ok(())
 }

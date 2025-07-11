@@ -3,11 +3,15 @@
 #![allow(non_snake_case)]
 
 use lazy_static::*;
-use std::{fmt::Display, sync::Mutex};
 use log::trace;
+use std::{fmt::Display, sync::Mutex};
 
 lazy_static! {
     static ref CONNECT_COUNT: Mutex<i32> = Mutex::new(0);
+}
+
+fn any_to_string<T: Display>(value: T) -> String {
+    value.to_string()
 }
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -84,6 +88,7 @@ impl From<&SapString> for String {
             }
             break;
         }
+        trace!("ucs2 vector created with {} elements", orig.len());
         ucs2::decode_with(orig.as_slice(), |c| Ok(v.extend_from_slice(c))).unwrap();
         String::from_utf8(v).unwrap()
     }
@@ -91,6 +96,7 @@ impl From<&SapString> for String {
 
 impl From<&[u16]> for SapString {
     fn from(value: &[u16]) -> Self {
+        trace!("from u16 slice");
         let mut v: Vec<u16> = Vec::new();
         for x in value {
             if *x > 0 as u16 {
@@ -98,6 +104,7 @@ impl From<&[u16]> for SapString {
             }
         }
         v.push(0);
+        trace!("end of string found {}", v.len());
         SapString::new(v)
     }
 }
@@ -185,7 +192,7 @@ pub struct SapStructure {
 }
 
 impl SapStructure {
-    pub fn get<S>(&self, name: S) -> Value
+    pub fn get<S>(&self, name: S) -> Result<Value, String>
     where
         S: Into<String>,
     {
@@ -195,12 +202,18 @@ impl SapStructure {
         let sap_name = SapString::from(str_name);
         unsafe {
             let type_handle = RfcDescribeType(self.handle, &mut errorInfo);
+            if errorInfo.code != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
             let rc = RfcGetFieldDescByName(
                 type_handle,
                 sap_name.raw_pointer(),
                 &mut fieldDescr,
                 &mut errorInfo,
             );
+            if rc != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
             assert_eq!(0, rc);
             match fieldDescr.type_ {
                 _RFCTYPE_RFCTYPE_CHAR => {
@@ -212,10 +225,13 @@ impl SapStructure {
                         fieldDescr.ucLength,
                         &mut errorInfo,
                     );
+                    if errorInfo.code != 0 {
+                        return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+                    }
                     assert_eq!(0, rc);
-                    Value::String(SapString::from(buffer.as_slice()))
+                    Ok(Value::String(SapString::from(buffer.as_slice())))
                 }
-                _ => Value::Empty,
+                _ => Ok(Value::Empty),
             }
         }
     }
@@ -223,6 +239,7 @@ impl SapStructure {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        trace!("closing connection");
         if self.is_connected() {
             if let Ok(mut x) = CONNECT_COUNT.lock() {
                 let mut errorInfo = error_info();
@@ -238,31 +255,39 @@ impl Drop for Connection {
 
 impl Drop for Function {
     fn drop(&mut self) {
-        let mut errorInfo = error_info();
+        let mut errorInfo1 = error_info();
+        let mut errorInfo2 = error_info();
         unsafe {
-            RfcDestroyFunctionDesc(self.fd, &mut errorInfo);
-            RfcDestroyFunction(self.fh, &mut errorInfo);
+            RfcDestroyFunction(self.fh, &mut errorInfo2); // destry funtion handle first
+            RfcDestroyFunctionDesc(self.fd, &mut errorInfo1);
         }
+        trace!("drop function done");
     }
 }
 impl Drop for SapTable {
+    #[tracing::instrument]
     fn drop(&mut self) {
+        trace!("drop table");
         if !self.dependent {
             let mut errorInfo = error_info();
             unsafe {
                 RfcDestroyTable(self.handle, &mut errorInfo);
             }
         }
+        trace!("drop table");
     }
 }
 impl Drop for SapStructure {
+    #[tracing::instrument]
     fn drop(&mut self) {
+        trace!("drop structure");
         if !self.dependent {
             let mut errorInfo = error_info();
             unsafe {
                 RfcDestroyStructure(self.handle, &mut errorInfo);
             }
         }
+        trace!("drop structure done");
     }
 }
 
@@ -282,7 +307,7 @@ impl Display for Value {
             Value::Int(i) => write!(f, "{i}"),
             Value::Table(_) => todo!(),
             Value::Structure(_) => todo!(),
-            Value::Empty => todo!(),            
+            Value::Empty => todo!(),
         }
     }
 }
@@ -301,7 +326,7 @@ impl std::fmt::Debug for SapStructure {
             for idx in 0..count {
                 let mut fieldDescr = field_descriptor();
                 let rc = RfcGetFieldDescByIndex(type_handle, idx, &mut fieldDescr, &mut errorInfo);
-                assert_eq!(0,rc);
+                assert_eq!(0, rc);
                 let dbg_val: Box<dyn std::fmt::Debug> = match fieldDescr.type_ {
                     _RFCTYPE_RFCTYPE_CHAR => {
                         let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
@@ -314,7 +339,7 @@ impl std::fmt::Debug for SapStructure {
                         );
                         assert_eq!(0, rc);
                         Box::new(String::from(&SapString::from(buffer.as_slice())))
-                    },
+                    }
                     _ => Box::new(String::from("<value>")),
                 };
                 dbg.field(
@@ -369,15 +394,19 @@ impl std::fmt::Debug for SapTable {
 }
 
 impl Function {
-    pub fn execute(&self) {
+    pub fn execute(&self) -> Result<(), String> {
         let mut errorInfo = error_info();
         unsafe {
             let rc = RfcInvoke(self.cn, self.fh as *mut RFC_DATA_CONTAINER, &mut errorInfo);
+            if errorInfo.code != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
             assert_eq!(0, rc);
         }
+        Ok(())
     }
 
-    pub fn set<V>(&self, name: &str, value: V)
+    pub fn set<V>(&self, name: &str, value: V) -> Result<(), String>
     where
         V: Into<Value>,
     {
@@ -392,22 +421,34 @@ impl Function {
                     ss.len() as u32,
                     &mut errorInfo,
                 );
+                if rc != 0 {
+                    let x = SapString::from(errorInfo.message.as_slice());
+                    trace!("sap string created");
+                    return Err(String::from(&x));
+                }
                 assert_eq!(0, rc);
             }
         }
+        Ok(())
     }
 
-    pub fn get(&self, _name: &str) -> Value {
+    pub fn get(&self, _name: &str) -> Result<Value, String> {
         let mut paramDesc = parameter_description();
         let mut errorInfo = error_info();
         let name = SapString::from(_name);
         unsafe {
             RfcGetParameterDescByName(self.fd, name.raw_pointer(), &mut paramDesc, &mut errorInfo);
+            if errorInfo.code != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
         }
-        match paramDesc.type_ {
+        let v = match paramDesc.type_ {
             _RFCTYPE_RFCTYPE_INT => unsafe {
                 let mut value: RFC_INT = 0;
                 RfcGetInt(self.fh, name.raw_pointer(), &mut value, &mut errorInfo);
+                if errorInfo.code != 0 {
+                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+                }
                 Value::Int(value as i64)
             },
             _RFCTYPE_RFCTYPE_STRUCTURE => unsafe {
@@ -418,6 +459,9 @@ impl Function {
                     &mut structHandle,
                     &mut errorInfo,
                 );
+                if errorInfo.code != 0 {
+                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+                }
                 assert_eq!(0, rc);
                 trace!("structure handle: {:p}", structHandle);
                 Value::Structure(SapStructure {
@@ -428,6 +472,9 @@ impl Function {
             _RFCTYPE_RFCTYPE_TABLE => unsafe {
                 let mut handle: RFC_TABLE_HANDLE = 0 as RFC_TABLE_HANDLE;
                 let rc = RfcGetTable(self.fh, name.raw_pointer(), &mut handle, &mut errorInfo);
+                if errorInfo.code != 0 {
+                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+                }
                 assert_eq!(0, rc);
                 trace!("table handle: {:p}", handle);
                 Value::Table(SapTable {
@@ -436,7 +483,8 @@ impl Function {
                 })
             },
             _ => todo!(),
-        }
+        };
+        Ok(v)
     }
 }
 
@@ -464,66 +512,84 @@ impl Connection {
         v
     }
 
-    pub fn connect(mut self) -> Self {
-        if let Ok(mut x) = CONNECT_COUNT.lock() {
-            let ps = self
-                .params
-                .iter()
-                .map(|x| _RFC_CONNECTION_PARAMETER {
-                    name: x.name.raw_pointer(),
-                    value: x.value.raw_pointer(),
-                })
-                .collect::<Vec<_RFC_CONNECTION_PARAMETER>>()
-                .into_boxed_slice();
-            let mut z = error_info();
-            trace!( "parameter count: {}", ps.len());
-            let cn = unsafe { RfcOpenConnection(ps.as_ptr(), ps.len() as u32, &mut z) };
-            trace!("cn: {cn:p}");
-            trace!("par {:?}", ps[0]);
-            dump_memory(self.params[0].name.raw_pointer());
-            dump_memory(self.params[0].value.raw_pointer());
-            if cn != 0 as *mut _RFC_CONNECTION_HANDLE {
-                self.cn = cn;
-                *x = *x + 1;
-                trace!("open -> {} connections", *x);
-            }
-            trace!("Key: {:}", String::from(&SapString::from(z.key.as_slice())));
-            trace!(
-                "Message: {:}",
-                String::from(&SapString::from(z.message.as_slice()))
-            );
-        };
-        self
+    pub fn connect(mut self) -> Result<Self, String> {
+        let mut x = CONNECT_COUNT.lock().map_err(any_to_string)?;
+        let ps = self
+            .params
+            .iter()
+            .map(|x| _RFC_CONNECTION_PARAMETER {
+                name: x.name.raw_pointer(),
+                value: x.value.raw_pointer(),
+            })
+            .collect::<Vec<_RFC_CONNECTION_PARAMETER>>()
+            .into_boxed_slice();
+        let mut err_info = error_info();
+        trace!("parameter count: {}", ps.len());
+        let cn = unsafe { RfcOpenConnection(ps.as_ptr(), ps.len() as u32, &mut err_info) };
+        trace!("cn: {cn:p}");
+        trace!("par {:?}", ps[0]);
+        dump_memory(self.params[0].name.raw_pointer());
+        dump_memory(self.params[0].value.raw_pointer());
+        if cn != 0 as *mut _RFC_CONNECTION_HANDLE {
+            self.cn = cn;
+            *x = *x + 1;
+            trace!("open -> {} connections", *x);
+        }
+        trace!(
+            "Key: {:}",
+            String::from(&SapString::from(err_info.key.as_slice()))
+        );
+        trace!(
+            "Message: {:}",
+            String::from(&SapString::from(err_info.message.as_slice()))
+        );
+        if err_info.code != 0 {
+            return Err(String::from(&SapString::from(err_info.message.as_slice())));
+        }
+
+        Ok(self)
     }
 
-    pub fn function(&self, arg: &str) -> Function {
+    pub fn function(&self, arg: &str) -> Result<Function, String> {
         let name = SapString::from(arg);
         let mut errorInfo = error_info();
         unsafe {
             let fd = RfcGetFunctionDesc(self.cn, name.raw_pointer(), &mut errorInfo);
+            if errorInfo.code != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
             assert!(fd as usize != 0);
 
             let mut count: cty::c_uint = 0;
             let rc = RfcGetParameterCount(fd, &mut count as *mut u32, &mut errorInfo);
+            if errorInfo.code != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
             assert_eq!(rc, 0);
-            trace!( "param count: {count}");
+            trace!("param count: {count}");
             for i in 0..count {
                 let mut paramDesc = parameter_description();
                 let rc = RfcGetParameterDescByIndex(fd, i, &mut paramDesc, &mut errorInfo);
+                if errorInfo.code != 0 {
+                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+                }
 
                 assert_eq!(rc, 0);
 
                 let s = paramDesc.name.as_slice();
                 let n = String::from(&SapString::from(s));
-                trace!( "{i} {n} Type:{}", paramDesc.type_);
+                trace!("{i} {n} Type:{}", paramDesc.type_);
             }
             let fh = RfcCreateFunction(fd, &mut errorInfo);
+            if errorInfo.code != 0 {
+                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
+            }
             assert_ne!(0, fh as usize);
-            Function {
+            Ok(Function {
                 cn: self.cn,
                 fd,
                 fh,
-            }
+            })
         }
     }
 }
