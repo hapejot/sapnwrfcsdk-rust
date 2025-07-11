@@ -19,7 +19,7 @@ fn main() {
         .clang_arg("-DSAPwithUNICODE")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.
@@ -71,9 +71,9 @@ fn plattform_copy(sap_dir: &str) {
     let dest_path = PathBuf::from(format!("{:}-windows", sap_dir)).join("lib");
 
     copy_dll(&dest_path, "sapnwrfc.dll", &output_path);
-    copy_dll(&dest_path, "icudt50.dll", &output_path);
-    copy_dll(&dest_path, "icuin50.dll", &output_path);
-    copy_dll(&dest_path, "icuuc50.dll", &output_path);
+    copy_dll(&dest_path, "icudt57.dll", &output_path);
+    copy_dll(&dest_path, "icuin57.dll", &output_path);
+    copy_dll(&dest_path, "icuuc57.dll", &output_path);
     copy_dll(&dest_path, "libsapucum.dll", &output_path);
 }
 
