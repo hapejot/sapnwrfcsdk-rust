@@ -5,28 +5,9 @@ use serde::{
 };
 
 use crate::{
-    error_info,
-    librfc::{
-        RfcDestroyFunction, RfcDestroyFunctionDesc, RfcGetChars, RfcGetInt, RfcGetParameterCount,
-        RfcGetParameterDescByIndex, RfcGetParameterDescByName, RfcGetString, RfcGetStringLength,
-        RfcGetStructure, RfcGetTable, RfcGetXString, RfcInvoke, RfcType, RFC_CONNECTION_HANDLE,
-        RFC_DATA_CONTAINER, RFC_FUNCTION_DESC_HANDLE, RFC_FUNCTION_HANDLE, RFC_INT,
-        RFC_STRUCTURE_HANDLE, RFC_TABLE_HANDLE, RFC_TYPE_DESC_HANDLE,
-        _RFCTYPE_RFCTYPE_CHAR as RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_INT as RFCTYPE_RFCTYPE_INT,
-        _RFCTYPE_RFCTYPE_STRING as RFCTYPE_RFCTYPE_STRING,
-        _RFCTYPE_RFCTYPE_STRUCTURE as RFCTYPE_RFCTYPE_STRUCTURE,
-        _RFCTYPE_RFCTYPE_TABLE as RFCTYPE_RFCTYPE_TABLE,
-        _RFC_DIRECTION_RFC_CHANGING as RFC_DIRECTION_RFC_CHANGING,
-        _RFC_DIRECTION_RFC_EXPORT as RFC_DIRECTION_RFC_EXPORT,
-        _RFC_DIRECTION_RFC_IMPORT as RFC_DIRECTION_RFC_IMPORT,
-        _RFC_DIRECTION_RFC_TABLES as RFC_DIRECTION_RFC_TABLES,
-    },
-    parameter_description, set_chars_from_str, set_structure_from_type_handle,
-    set_table_from_type_handle, set_xstring_from_str,
-    string::SapString,
-    structure::SapStructure,
-    table,
-    value::Value,
+    error_info, librfc::{
+        _RFC_DIRECTION_RFC_CHANGING as RFC_DIRECTION_RFC_CHANGING, _RFC_DIRECTION_RFC_EXPORT as RFC_DIRECTION_RFC_EXPORT, _RFC_DIRECTION_RFC_IMPORT as RFC_DIRECTION_RFC_IMPORT, _RFC_DIRECTION_RFC_TABLES as RFC_DIRECTION_RFC_TABLES, _RFCTYPE_RFCTYPE_CHAR as RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_INT as RFCTYPE_RFCTYPE_INT, _RFCTYPE_RFCTYPE_STRING as RFCTYPE_RFCTYPE_STRING, _RFCTYPE_RFCTYPE_STRUCTURE as RFCTYPE_RFCTYPE_STRUCTURE, _RFCTYPE_RFCTYPE_TABLE as RFCTYPE_RFCTYPE_TABLE, RFC_CONNECTION_HANDLE, RFC_DATA_CONTAINER, RFC_FUNCTION_DESC_HANDLE, RFC_FUNCTION_HANDLE, RFC_INT, RFC_STRUCTURE_HANDLE, RFC_TABLE_HANDLE, RFC_TYPE_DESC_HANDLE, RfcDestroyFunction, RfcDestroyFunctionDesc, RfcGetChars, RfcGetInt, RfcGetParameterCount, RfcGetParameterDescByIndex, RfcGetParameterDescByName, RfcGetString, RfcGetStringLength, RfcGetStructure, RfcGetTable, RfcGetXString, RfcInvoke, RfcType
+    }, parameter_description, set_chars, set_chars_from_str, set_structure_from_type_handle, set_table_from_type_handle, set_xstring_from_str, string::SapString, structure::SapStructure, table, value::Value
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -148,9 +129,12 @@ impl Function {
     where
         V: Into<Value>,
     {
-        let _ = value;
-        let _ = name;
-        todo!("Implement set for function parameters");
+        let v: Value = value.into();
+        match v {
+            Value::String(sap_string) => set_chars(self.fh, name, sap_string)?,
+            _ => todo!(),
+        }
+        Ok(())
     }
 
     pub fn get(&self, name: &str) -> Result<Value, String> {
