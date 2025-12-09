@@ -83,15 +83,24 @@ fn plattform_copy(sap_dir: &PathBuf) {
 
 fn copy_dll(dest_path: &PathBuf, name: &str, output_path: &PathBuf) {
     let src1 = dest_path.join(name);
+    assert!(
+        src1.exists(),
+        "file {:} does not exist",
+        src1.to_str().unwrap()
+    );
     let dst1 = output_path.join(name);
-    let _ = std::fs::copy(&src1, &dst1).expect(format!("copy {:?} to {:?}", &src1, &dst1).as_str());
+    assert!(
+        output_path.exists(),
+        "path {} doesnt exist",
+        output_path.to_str().unwrap()
+    );
+    std::fs::copy(&src1, &dst1).expect(format!("copy {:?} to {:?}", &src1, &dst1).as_str());
 }
 
 fn get_output_path() -> PathBuf {
     //<root or manifest path>/target/<profile>/
     // let manifest_dir_string = env::var("CARGO_MANIFEST_DIR").unwrap();
     let build_type = env::var("PROFILE").unwrap();
-    let path = Path::new("target")
-        .join(build_type);
-    return PathBuf::from(path);
+    let path = Path::new("target").join(build_type);
+    path
 }
