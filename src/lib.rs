@@ -3,8 +3,13 @@
 #![allow(non_snake_case)]
 
 use lazy_static::*;
-use log::trace;
+use log::{info, trace};
 use std::{fmt::Display, sync::Mutex};
+use string::SapString;
+
+use crate::librfc::{
+    RfcAppendNewRow, RfcCreateStructure, RfcCreateTable, RfcGetFieldCount, RfcGetFieldDescByIndex, RfcSetChars, RfcSetStructure, RfcSetTable, RfcSetXString, RFC_DATA_CONTAINER, RFC_ERROR_INFO, RFC_FIELD_DESC, RFC_PARAMETER_DESC, RFC_TYPE_DESC_HANDLE, _RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_STRING, _RFCTYPE_RFCTYPE_STRUCTURE, _RFCTYPE_RFCTYPE_TABLE, _RFC_FIELD_DESC, _RFC_TYPE_DESC_HANDLE
+};
 
 lazy_static! {
     static ref CONNECT_COUNT: Mutex<i32> = Mutex::new(0);
@@ -13,346 +18,52 @@ lazy_static! {
 fn any_to_string<T: Display>(value: T) -> String {
     value.to_string()
 }
+#[allow(dead_code)]
+mod librfc {
+    #[repr(i32)]
+    #[derive(Debug)]
+    pub enum RfcType {
+        Char = _RFCTYPE_RFCTYPE_CHAR,
+        Date = _RFCTYPE_RFCTYPE_DATE,
+        Time = _RFCTYPE_RFCTYPE_TIME,
+        Byte = _RFCTYPE_RFCTYPE_BYTE,
+        Float = _RFCTYPE_RFCTYPE_FLOAT,
+        Int1 = _RFCTYPE_RFCTYPE_INT1,
+        Int2 = _RFCTYPE_RFCTYPE_INT2,
+        Int8 = _RFCTYPE_RFCTYPE_INT8,
+        Bcd = _RFCTYPE_RFCTYPE_BCD,
+        Num = _RFCTYPE_RFCTYPE_NUM,
+        Int = _RFCTYPE_RFCTYPE_INT,        
+        String = _RFCTYPE_RFCTYPE_STRING,
+        Structure = _RFCTYPE_RFCTYPE_STRUCTURE,
+        Table = _RFCTYPE_RFCTYPE_TABLE,
+        XString = _RFCTYPE_RFCTYPE_XSTRING,   
+    }
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-#[derive(Debug, Clone)]
-pub struct RfcParam {
-    name: SapString,
-    value: SapString,
-}
-
-impl RfcParam {
-    pub fn new<S1, S2>(name: S1, value: S2) -> Self
-    where
-        S1: Into<SapString>,
-        S2: Into<SapString>,
-    {
-        Self {
-            name: name.into(),
-            value: value.into(),
+    impl From<i32> for RfcType {
+        fn from(value: i32) -> Self {
+            unsafe { std::mem::transmute(value) }
         }
     }
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
+pub mod rfc_param;
+mod string;
 
-#[derive(Clone)]
-pub struct SapString {
-    vec: Vec<u16>,
-}
+pub mod connection;
 
-impl SapString {
-    pub fn new<V>(vec: V) -> Self
-    where
-        V: Into<Vec<u16>>,
-    {
-        Self { vec: vec.into() }
-    }
+mod function;
 
-    pub fn raw_pointer(&self) -> *const SAP_UC {
-        self.vec.as_ptr()
-    }
+mod structure;
+mod table;
 
-    pub fn len(&self) -> usize {
-        self.vec.len() - 1
-    }
-}
+pub mod value;
 
-impl std::fmt::Debug for SapString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SapString({:?})", String::from(self))
-    }
-}
-
-impl From<&str> for SapString {
-    fn from(value: &str) -> Self {
-        let mut v: Vec<u16> = Vec::new();
-        ucs2::encode_with(value, |c| Ok(v.push(c))).unwrap();
-        v.push(0);
-        SapString::new(v)
-    }
-}
-
-impl From<&SapString> for String {
-    fn from(value: &SapString) -> Self {
-        let mut v: Vec<u8> = Vec::new();
-        let mut orig = value.vec.clone();
-        while orig.len() > 0 {
-            let l = orig.len() - 1;
-            if orig[l] == 0 {
-                orig.remove(l);
-                continue;
-            }
-            if orig[l] == 32 {
-                orig.remove(l);
-                continue;
-            }
-            break;
-        }
-        trace!("ucs2 vector created with {} elements", orig.len());
-        ucs2::decode_with(orig.as_slice(), |c| Ok(v.extend_from_slice(c))).unwrap();
-        String::from_utf8(v).unwrap()
-    }
-}
-
-impl From<&[u16]> for SapString {
-    fn from(value: &[u16]) -> Self {
-        trace!("from u16 slice");
-        let mut v: Vec<u16> = Vec::new();
-        for x in value {
-            if *x > 0 as u16 {
-                v.push(*x);
-            }
-        }
-        v.push(0);
-        trace!("end of string found {}", v.len());
-        SapString::new(v)
-    }
-}
-
-impl From<&str> for Value {
-    fn from(value: &str) -> Self {
-        Value::String(SapString::from(value))
-    }
-}
-
-impl From<String> for SapString {
-    fn from(value: String) -> Self {
-        let mut v: Vec<u16> = Vec::new();
-        ucs2::encode_with(value.as_str(), |c| Ok(v.push(c))).unwrap();
-        v.push(0);
-        SapString::new(v)
-    }
-}
-
-pub struct Connection {
-    cn: RFC_CONNECTION_HANDLE,
-    params: Vec<RfcParam>,
-}
-
-pub struct Function {
-    cn: RFC_CONNECTION_HANDLE,
-    fh: RFC_FUNCTION_HANDLE,
-    fd: RFC_FUNCTION_DESC_HANDLE,
-}
-
-pub struct SapTable {
-    handle: RFC_TABLE_HANDLE,
-    dependent: bool,
-}
-
-pub struct SapTableIterator {
-    handle: RFC_TABLE_HANDLE,
-    lines: u32,
-    tabix: u32,
-}
-
-impl SapTableIterator {
-    pub fn new(handle: RFC_TABLE_HANDLE) -> Self {
-        let lines = unsafe {
-            let mut errorInfo = error_info();
-            let mut rowCount: u32 = 0;
-            let r = RfcGetRowCount(handle, &mut rowCount, &mut errorInfo);
-            assert_eq!(0, r);
-            rowCount
-        };
-        Self {
-            handle,
-            lines,
-            tabix: 0,
-        }
-    }
-}
-
-impl Iterator for SapTableIterator {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.tabix < self.lines {
-            let x = unsafe {
-                let mut errorInfo = error_info();
-                let rc = RfcMoveTo(self.handle, self.tabix, &mut errorInfo);
-                assert_eq!(0, rc);
-                let struct_handle = RfcGetCurrentRow(self.handle, &mut errorInfo);
-                self.tabix += 1;
-                SapStructure {
-                    handle: struct_handle,
-                    dependent: true,
-                }
-            };
-            Some(Value::Structure(x))
-        } else {
-            None
-        }
-    }
-}
-
-pub struct SapStructure {
-    handle: RFC_STRUCTURE_HANDLE,
-    dependent: bool,
-}
-
-impl SapStructure {
-    pub fn get<S>(&self, name: S) -> Result<Value, String>
-    where
-        S: Into<String>,
-    {
-        let mut errorInfo = error_info();
-        let mut fieldDescr = field_descriptor();
-        let str_name: String = name.into();
-        let sap_name = SapString::from(str_name);
-        unsafe {
-            let type_handle = RfcDescribeType(self.handle, &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            let rc = RfcGetFieldDescByName(
-                type_handle,
-                sap_name.raw_pointer(),
-                &mut fieldDescr,
-                &mut errorInfo,
-            );
-            if rc != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            assert_eq!(0, rc);
-            match fieldDescr.type_ {
-                _RFCTYPE_RFCTYPE_CHAR => {
-                    let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
-                    let rc = RfcGetChars(
-                        self.handle,
-                        fieldDescr.name.as_ptr(),
-                        buffer.as_mut_ptr(),
-                        fieldDescr.ucLength,
-                        &mut errorInfo,
-                    );
-                    if errorInfo.code != 0 {
-                        return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                    }
-                    assert_eq!(0, rc);
-                    Ok(Value::String(SapString::from(buffer.as_slice())))
-                }
-                _ => Ok(Value::Empty),
-            }
-        }
-    }
-}
-
-impl Drop for Connection {
-    fn drop(&mut self) {
-        trace!("closing connection");
-        if self.is_connected() {
-            if let Ok(mut x) = CONNECT_COUNT.lock() {
-                let mut errorInfo = error_info();
-                unsafe {
-                    RfcCloseConnection(self.cn, &mut errorInfo);
-                }
-                *x = *x - 1;
-                trace!("close -> {} connections", *x);
-            }
-        }
-    }
-}
-
-impl Drop for Function {
-    fn drop(&mut self) {
-        let mut errorInfo1 = error_info();
-        let mut errorInfo2 = error_info();
-        unsafe {
-            RfcDestroyFunction(self.fh, &mut errorInfo2); // destry funtion handle first
-            RfcDestroyFunctionDesc(self.fd, &mut errorInfo1);
-        }
-        trace!("drop function done");
-    }
-}
-impl Drop for SapTable {
-    #[tracing::instrument]
-    fn drop(&mut self) {
-        trace!("drop table");
-        if !self.dependent {
-            let mut errorInfo = error_info();
-            unsafe {
-                RfcDestroyTable(self.handle, &mut errorInfo);
-            }
-        }
-        trace!("drop table");
-    }
-}
-impl Drop for SapStructure {
-    #[tracing::instrument]
-    fn drop(&mut self) {
-        trace!("drop structure");
-        if !self.dependent {
-            let mut errorInfo = error_info();
-            unsafe {
-                RfcDestroyStructure(self.handle, &mut errorInfo);
-            }
-        }
-        trace!("drop structure done");
-    }
-}
-
-#[derive(Debug)]
-pub enum Value {
-    Empty,
-    String(SapString),
-    Int(i64),
-    Table(SapTable),
-    Structure(SapStructure),
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::String(s) => write!(f, "{}", String::from(s)),
-            Value::Int(i) => write!(f, "{i}"),
-            Value::Table(_) => todo!(),
-            Value::Structure(_) => todo!(),
-            Value::Empty => todo!(),
-        }
-    }
-}
-
-impl std::fmt::Debug for SapStructure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut errorInfo = error_info();
-        let mut count: cty::c_uint = 0;
-        let mut dbg = f.debug_struct("SapStructure");
-        dbg.field("handle", &self.handle);
-        unsafe {
-            let type_handle = RfcDescribeType(self.handle, &mut errorInfo);
-            assert_eq!(errorInfo.code, 0);
-            let rc = RfcGetFieldCount(type_handle, &mut count, &mut errorInfo);
-
-            for idx in 0..count {
-                let mut fieldDescr = field_descriptor();
-                let rc = RfcGetFieldDescByIndex(type_handle, idx, &mut fieldDescr, &mut errorInfo);
-                assert_eq!(0, rc);
-                let dbg_val: Box<dyn std::fmt::Debug> = match fieldDescr.type_ {
-                    _RFCTYPE_RFCTYPE_CHAR => {
-                        let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
-                        let rc = RfcGetChars(
-                            self.handle,
-                            fieldDescr.name.as_ptr(),
-                            buffer.as_mut_ptr(),
-                            fieldDescr.ucLength,
-                            &mut errorInfo,
-                        );
-                        assert_eq!(0, rc);
-                        Box::new(String::from(&SapString::from(buffer.as_slice())))
-                    }
-                    _ => Box::new(String::from("<value>")),
-                };
-                dbg.field(
-                    String::from(&SapString::from(fieldDescr.name.as_slice())).as_str(),
-                    &dbg_val,
-                );
-            }
-            assert_eq!(0, rc);
-        }
-        dbg.finish()
-    }
-}
-
+/// Creates a new `RFC_FIELD_DESC` with default values.
+/// This function initializes an `RFC_FIELD_DESC` structure with zeroed fields.
+/// It sets the name to a zeroed `SapString`, type to 0, and all other fields to zero or null pointers.
+/// This is useful for creating a field descriptor that can be used as a template or placeholder
+/// before being filled with actual data.
 fn field_descriptor() -> _RFC_FIELD_DESC {
     let fieldDescr = RFC_FIELD_DESC {
         name: zero(),
@@ -368,232 +79,10 @@ fn field_descriptor() -> _RFC_FIELD_DESC {
     fieldDescr
 }
 
-impl std::iter::IntoIterator for SapTable {
-    type Item = Value;
-
-    type IntoIter = SapTableIterator;
-
-    fn into_iter(self) -> Self::IntoIter {
-        SapTableIterator::new(self.handle)
-    }
-}
-
-impl std::fmt::Debug for SapTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut dbg = f.debug_struct("SapTable");
-        dbg.field("handle", &self.handle);
-        unsafe {
-            let mut err_info = error_info();
-            let mut row_count: u32 = 0;
-            let rc = RfcGetRowCount(self.handle, &mut row_count, &mut err_info);
-            assert_eq!(0, rc);
-            dbg.field("row-count", &Box::new(row_count) as &dyn std::fmt::Debug);
-        }
-        dbg.finish()
-    }
-}
-
-impl Function {
-    pub fn execute(&self) -> Result<(), String> {
-        let mut errorInfo = error_info();
-        unsafe {
-            let rc = RfcInvoke(self.cn, self.fh as *mut RFC_DATA_CONTAINER, &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            assert_eq!(0, rc);
-        }
-        Ok(())
-    }
-
-    pub fn set<V>(&self, name: &str, value: V) -> Result<(), String>
-    where
-        V: Into<Value>,
-    {
-        let mut errorInfo = error_info();
-        let str_name = SapString::from(name);
-        if let Value::String(ss) = value.into() {
-            unsafe {
-                let rc = RfcSetChars(
-                    self.fh,
-                    str_name.raw_pointer(),
-                    ss.raw_pointer(),
-                    ss.len() as u32,
-                    &mut errorInfo,
-                );
-                if rc != 0 {
-                    let x = SapString::from(errorInfo.message.as_slice());
-                    trace!("sap string created");
-                    return Err(String::from(&x));
-                }
-                assert_eq!(0, rc);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn get(&self, _name: &str) -> Result<Value, String> {
-        let mut paramDesc = parameter_description();
-        let mut errorInfo = error_info();
-        let name = SapString::from(_name);
-        unsafe {
-            RfcGetParameterDescByName(self.fd, name.raw_pointer(), &mut paramDesc, &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-        }
-        let v = match paramDesc.type_ {
-            _RFCTYPE_RFCTYPE_INT => unsafe {
-                let mut value: RFC_INT = 0;
-                RfcGetInt(self.fh, name.raw_pointer(), &mut value, &mut errorInfo);
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                Value::Int(value as i64)
-            },
-            _RFCTYPE_RFCTYPE_STRUCTURE => unsafe {
-                let mut structHandle: RFC_STRUCTURE_HANDLE = 0 as RFC_STRUCTURE_HANDLE;
-                let rc = RfcGetStructure(
-                    self.fh,
-                    name.raw_pointer(),
-                    &mut structHandle,
-                    &mut errorInfo,
-                );
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
-                trace!("structure handle: {:p}", structHandle);
-                Value::Structure(SapStructure {
-                    handle: structHandle,
-                    dependent: true,
-                })
-            },
-            _RFCTYPE_RFCTYPE_TABLE => unsafe {
-                let mut handle: RFC_TABLE_HANDLE = 0 as RFC_TABLE_HANDLE;
-                let rc = RfcGetTable(self.fh, name.raw_pointer(), &mut handle, &mut errorInfo);
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
-                trace!("table handle: {:p}", handle);
-                Value::Table(SapTable {
-                    handle,
-                    dependent: true,
-                })
-            },
-            _ => todo!(),
-        };
-        Ok(v)
-    }
-}
-
-impl Connection {
-    pub fn new() -> Self {
-        Self {
-            params: Vec::new(),
-            cn: 0 as RFC_CONNECTION_HANDLE,
-        }
-    }
-    pub fn is_connected(&self) -> bool {
-        self.cn != (0 as RFC_CONNECTION_HANDLE)
-    }
-
-    pub fn destination(mut self, arg: &str) -> Self {
-        self.params.push(RfcParam::new("dest", arg));
-        self
-    }
-
-    pub fn get_params(&self) -> Vec<SapString> {
-        let mut v = Vec::new();
-        for x in self.params.iter() {
-            v.push(x.name.clone());
-        }
-        v
-    }
-
-    pub fn connect(mut self) -> Result<Self, String> {
-        let mut x = CONNECT_COUNT.lock().map_err(any_to_string)?;
-        let ps = self
-            .params
-            .iter()
-            .map(|x| _RFC_CONNECTION_PARAMETER {
-                name: x.name.raw_pointer(),
-                value: x.value.raw_pointer(),
-            })
-            .collect::<Vec<_RFC_CONNECTION_PARAMETER>>()
-            .into_boxed_slice();
-        let mut err_info = error_info();
-        trace!("parameter count: {}", ps.len());
-        let cn = unsafe { RfcOpenConnection(ps.as_ptr(), ps.len() as u32, &mut err_info) };
-        trace!("cn: {cn:p}");
-        trace!("par {:?}", ps[0]);
-        dump_memory(self.params[0].name.raw_pointer());
-        dump_memory(self.params[0].value.raw_pointer());
-        if cn != 0 as *mut _RFC_CONNECTION_HANDLE {
-            self.cn = cn;
-            *x = *x + 1;
-            trace!("open -> {} connections", *x);
-        }
-        trace!(
-            "Key: {:}",
-            String::from(&SapString::from(err_info.key.as_slice()))
-        );
-        trace!(
-            "Message: {:}",
-            String::from(&SapString::from(err_info.message.as_slice()))
-        );
-        if err_info.code != 0 {
-            return Err(String::from(&SapString::from(err_info.message.as_slice())));
-        }
-
-        Ok(self)
-    }
-
-    pub fn function(&self, arg: &str) -> Result<Function, String> {
-        let name = SapString::from(arg);
-        let mut errorInfo = error_info();
-        unsafe {
-            let fd = RfcGetFunctionDesc(self.cn, name.raw_pointer(), &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            assert!(fd as usize != 0);
-
-            let mut count: cty::c_uint = 0;
-            let rc = RfcGetParameterCount(fd, &mut count as *mut u32, &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            assert_eq!(rc, 0);
-            trace!("param count: {count}");
-            for i in 0..count {
-                let mut paramDesc = parameter_description();
-                let rc = RfcGetParameterDescByIndex(fd, i, &mut paramDesc, &mut errorInfo);
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-
-                assert_eq!(rc, 0);
-
-                let s = paramDesc.name.as_slice();
-                let n = String::from(&SapString::from(s));
-                trace!("{i} {n} Type:{}", paramDesc.type_);
-            }
-            let fh = RfcCreateFunction(fd, &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            assert_ne!(0, fh as usize);
-            Ok(Function {
-                cn: self.cn,
-                fd,
-                fh,
-            })
-        }
-    }
-}
-
+/// Creates a zero-initialized `RFC_PARAMETER_DESC` structure.
+/// This function initializes the `RFC_PARAMETER_DESC` structure with default values.
+/// The structure contains fields for parameter name, type, direction, length, decimals,
+/// type description handle, default value, parameter text, optional flag, and extended description.
 fn parameter_description() -> RFC_PARAMETER_DESC {
     let paramDesc = RFC_PARAMETER_DESC {
         name: zero(),
@@ -611,10 +100,18 @@ fn parameter_description() -> RFC_PARAMETER_DESC {
     paramDesc
 }
 
+/// Creates a zero-initialized array of `u16` with the specified size.
+/// This function returns an array of `u16` with all elements set to zero.
 fn zero<const N: usize>() -> [u16; N] {
     [0; N]
 }
 
+/// Creates a new `RFC_ERROR_INFO` structure with all fields initialized to zero.
+/// This function initializes the `RFC_ERROR_INFO` structure with default values.
+/// The structure contains fields for ABAP message class, number, type, and various message variables.
+/// It also includes fields for error code, group, key, and message.
+/// # Returns
+/// * `RFC_ERROR_INFO` - A new instance of the `RFC_ERROR_INFO` structure.
 fn error_info() -> RFC_ERROR_INFO {
     let z = RFC_ERROR_INFO {
         abapMsgClass: [0; 21],
@@ -632,6 +129,10 @@ fn error_info() -> RFC_ERROR_INFO {
     z
 }
 
+/// Dumps the memory content of a pointer to a 16-bit character array.
+/// This function takes a pointer to a 16-bit character array and prints the first 16 characters
+/// in hexadecimal format for debugging purposes.
+#[allow(dead_code)]
 fn dump_memory(name_ptr: *const u16) {
     trace!("name: {:p}", name_ptr);
     for i in 0..16 as usize {
@@ -639,4 +140,287 @@ fn dump_memory(name_ptr: *const u16) {
             trace!(" {:02x}", *(name_ptr.add(i)));
         }
     }
+}
+
+/// Sets a character field in the RFC data container from a `SapString`.
+/// This function takes a pointer to the RFC data container, a field name, and a `SapString` value.
+/// It uses the `RfcSetChars` function to set the value in the RFC data container.
+/// If the operation fails, it returns an error message.
+/// # Arguments
+/// * `cont` - A pointer to the RFC data container.
+/// * `name` - The name of the field to set.
+/// * `value` - The `SapString` value to set in the field.
+/// # Returns
+/// * `Result<(), String>` - Returns Ok(()) on success, or an error message on failure.
+/// # Errors
+/// * Returns an error if the `RfcSetChars` function fails, containing the error message from the SAP system.       
+///
+fn set_chars(cont: *mut RFC_DATA_CONTAINER, name: &str, value: SapString) -> Result<(), String> {
+    let mut errorInfo = error_info();
+    let str_name = SapString::from(name);
+
+    unsafe {
+        let rc = RfcSetChars(
+            cont,
+            str_name.raw_pointer(),
+            value.raw_pointer(),
+            value.len() as u32,
+            &mut errorInfo,
+        );
+        trace!("set value for {}: {:?} -> {}", name, value, rc);
+        if rc != 0 {
+            let x = SapString::from(errorInfo.message.as_slice());
+            return Err(String::from(&x));
+        }
+        assert_eq!(0, rc);
+    }
+    Ok(())
+}
+
+
+/// Sets a xstring field in the RFC data container from a string.
+/// This function takes a pointer to the RFC data container, a field name, and a string value.
+/// It converts the string to a `SapString` and uses the `RfcSetChars` function to set the value.
+/// If the operation fails, it returns an error message.
+/// # Arguments
+/// * `cont` - A pointer to the RFC data container.     
+/// * `name` - The name of the field to set.
+/// * `value` - The string value to set in the field.
+/// # Returns
+/// * `Result<(), String>` - Returns Ok(()) on success, or an error message on failure.
+/// # Errors
+/// * Returns an error if the `RfcSetChars` function fails, containing the error message from the SAP system.
+pub fn set_xstring_from_str(
+    cont: *mut crate::RFC_DATA_CONTAINER,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let mut errorInfo = error_info();
+    let str_name = SapString::from(name);
+    let value = value.as_bytes();
+    unsafe {
+        let rc = RfcSetXString(
+            cont,
+            str_name.raw_pointer(),
+            value.as_ptr(),
+            value.len() as u32,
+            &mut errorInfo,
+        );
+        trace!("set value for {}: {:?} -> {}", name, value, rc);
+        if rc != 0 {
+            let x = SapString::from(errorInfo.message.as_slice());
+            return Err(String::from(&x));
+        }
+        assert_eq!(0, rc);
+    }
+    Ok(())
+}
+
+/// Sets a character field in the RFC data container from a string.
+/// This function takes a pointer to the RFC data container, a field name, and a string value.
+/// It converts the string to a `SapString` and uses the `RfcSetChars` function to set the value.
+/// If the operation fails, it returns an error message.
+/// # Arguments
+/// * `cont` - A pointer to the RFC data container.     
+/// * `name` - The name of the field to set.
+/// * `value` - The string value to set in the field.
+/// # Returns
+/// * `Result<(), String>` - Returns Ok(()) on success, or an error message on failure.
+/// # Errors
+/// * Returns an error if the `RfcSetChars` function fails, containing the error message from the SAP system.
+fn set_chars_from_str(
+    cont: *mut crate::RFC_DATA_CONTAINER,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let mut errorInfo = error_info();
+    let str_name = SapString::from(name);
+    let value = SapString::from(value);
+    unsafe {
+        let rc = RfcSetChars(
+            cont,
+            str_name.raw_pointer(),
+            value.raw_pointer(),
+            value.len() as u32,
+            &mut errorInfo,
+        );
+        trace!("set value for {}: {:?} -> {}", name, value, rc);
+        if rc != 0 {
+            let x = SapString::from(errorInfo.message.as_slice());
+            return Err(String::from(&x));
+        }
+        assert_eq!(0, rc);
+    }
+    Ok(())
+}
+
+/// Sets a table in the RFC data container from a JSON array.
+/// This function iterates over the provided JSON array and sets each field in the table according to its type handle.
+/// It supports fields of type CHAR, STRING, and STRUCTURE.
+/// If a field is of type STRUCTURE, it recursively calls itself to set the structure from the type handle.
+/// If a field is of type TABLE, it currently does nothing, as handling for nested tables is not implemented.
+/// # Arguments
+/// * `cont` - A pointer to the RFC data container.
+/// * `name` - The name of the table to set.
+/// * `type_handle` - The type handle of the table.
+/// * `values` - A JSON array containing the values to set in the table.
+/// # Returns
+/// * `Result<(), String>` - Returns Ok(()) on success, or an error message on failure.
+/// # Errors
+/// * Returns an error if the field type is unsupported or if setting the table fails.
+fn set_structure_from_type_handle(
+    cont: *mut crate::RFC_DATA_CONTAINER,
+    name: &str,
+    type_handle: crate::RFC_TYPE_DESC_HANDLE,
+    value: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let mut errorInfo = error_info();
+    let structure_handle = unsafe { RfcCreateStructure(type_handle, &mut errorInfo) };
+    fill_structure(structure_handle, type_handle, value)?;
+
+    let name_sap = SapString::from(name);
+    let rc = unsafe {
+        RfcSetStructure(
+            cont,
+            name_sap.raw_pointer(),
+            structure_handle,
+            &mut errorInfo,
+        )
+    };
+    if rc != 0 {
+        let x = SapString::from(errorInfo.message.as_slice());
+        trace!("sap string created");
+        return Err(String::from(&x));
+    }
+    assert_eq!(0, rc);
+
+    Ok(())
+}
+
+/// Fills an RFC data container structure from a JSON map.
+/// This function iterates over the fields in the structure type handle and sets the values in the
+/// RFC data container according to the field type.
+/// It supports fields of type CHAR, STRING, STRUCTURE, and TABLE.
+/// If a field is of type STRUCTURE, it recursively calls itself to fill the structure from the type handle.
+/// If a field is of type TABLE, it calls `set_table_from_type_handle` to set the table values.
+/// # Arguments
+/// * `row_handle` - A pointer to the RFC data container.
+/// * `row_type_handle` - A pointer to the type handle of the structure.            
+/// * `values_map` - A map containing the field names and their corresponding JSON values.
+/// # Returns
+/// * `Result<(), String>` - Returns Ok(()) on success, or an error message on failure.
+/// # Errors
+/// * Returns an error if the field type is unsupported or if setting the structure fails.  
+/// # Note
+/// * This function assumes that the `row_handle` and `row_type_handle` are valid pointers to an RFC data container and its type description, respectively.
+/// * It logs the processing of each field index and the expected type for each field.
+/// * It handles different JSON value types (string, object, array) according to the field type.
+/// * It uses `set_chars_from_str`, `set_structure_from_type_handle`, and `set_table_from_type_handle` to set the values in the RFC data container.
+/// * It logs warnings if the expected type does not match the provided JSON value type.
+fn fill_structure(
+    row_handle: *mut RFC_DATA_CONTAINER,
+    row_type_handle: *mut _RFC_TYPE_DESC_HANDLE,
+    values_map: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let mut errorInfo = error_info();
+    let mut count = 0;
+    unsafe {
+        RfcGetFieldCount(row_type_handle, &mut count, &mut errorInfo);
+    }
+
+    Ok(for idx in 0..count {
+        info!("Processing field index: {}", idx);
+        let mut fieldDescr = field_descriptor();
+        unsafe {
+            RfcGetFieldDescByIndex(row_type_handle, idx, &mut fieldDescr, &mut errorInfo);
+        }
+        let name = SapString::new(&fieldDescr.name);
+        let name = String::from(&name);
+        if let Some(v) = values_map.get(&name) {
+            match fieldDescr.type_ {
+                _RFCTYPE_RFCTYPE_CHAR => {
+                    if let serde_json::Value::String(v) = v {
+                        set_chars_from_str(row_handle, name.as_str(), v.as_str())?;
+                    } else {
+                        info!("Expected string for field: {}, got {:?}", name, v);
+                    }
+                }
+                _RFCTYPE_RFCTYPE_STRUCTURE => {
+                    if let serde_json::Value::Object(obj) = v {
+                        set_structure_from_type_handle(
+                            row_handle,
+                            name.as_str(),
+                            fieldDescr.typeDescHandle,
+                            &obj.clone(),
+                        )?;
+                    } else {
+                        info!("Expected structure for field: {}, got {:?}", name, v);
+                    }
+                }
+                _RFCTYPE_RFCTYPE_STRING => {
+                    if let serde_json::Value::String(v) = v {
+                        set_chars_from_str(row_handle, name.as_str(), v.as_str())?;
+                    } else {
+                        info!("Expected string for field: {}, got {:?}", name, v);
+                    }
+                }
+                _RFCTYPE_RFCTYPE_TABLE => {
+                    if let serde_json::Value::Array(arr) = v {
+                        set_table_from_type_handle(
+                            row_handle,
+                            name.as_str(),
+                            fieldDescr.typeDescHandle,
+                            arr,
+                        )?;
+                    } else {
+                        info!("Expected array for field: {}, got {:?}", name, v);
+                    }
+                }
+                _ => todo!("Unsupported field type: {}", fieldDescr.type_),
+            }
+        }
+    })
+}
+
+/// Sets a table in the RFC data container from a JSON array.
+/// This function iterates over the provided JSON array and sets each field in the table according to its type handle.
+/// It supports fields of type CHAR, STRING, and STRUCTURE.
+/// If a field is of type STRUCTURE, it recursively calls itself to set the structure from the type handle.
+/// If a field is of type TABLE, it currently does nothing, as handling for nested tables is not implemented.
+/// # Arguments
+/// * `cont` - A pointer to the RFC data container.
+/// * `name` - The name of the table to set.
+/// * `type_handle` - The type handle of the table.     
+/// * `value` - A slice of JSON values representing the table rows.
+/// # Returns
+/// * `Result<(), String>` - Returns Ok(()) on success, or an error message on failure.
+/// # Errors
+/// * Returns an error if the field type is unsupported or if setting the structure fails.
+fn set_table_from_type_handle(
+    cont: *mut RFC_DATA_CONTAINER,
+    name: &str,
+    type_handle: RFC_TYPE_DESC_HANDLE,
+    value: &[serde_json::Value],
+) -> Result<(), String> {
+    let mut errorInfo = error_info();
+    let table_handle = unsafe { RfcCreateTable(type_handle, &mut errorInfo) };
+
+    for v in value {
+        if let serde_json::Value::Object(obj) = v {
+            let row_handle = unsafe { RfcAppendNewRow(table_handle, &mut errorInfo) };
+            fill_structure(row_handle, type_handle, obj)?;
+        } else {
+            info!("Expected object for field: {}, got {:?}", name, v);
+        }
+    }
+
+    info!("Setting table: {}", name);
+    let name_sap = SapString::from(name);
+    let rc = unsafe { RfcSetTable(cont, name_sap.raw_pointer(), table_handle, &mut errorInfo) };
+    if rc != 0 {
+        let x = SapString::from(errorInfo.message.as_slice());
+        return Err(String::from(&x));
+    }
+    assert_eq!(0, rc);
+    Ok(())
 }

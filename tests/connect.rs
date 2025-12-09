@@ -1,18 +1,18 @@
-use librfc_rust::{Connection, Value};
+use librfc_rust::{connection::Connection, value::Value};
 
-struct Sample {
-    x: usize,
-    y: i64,
-}
+// struct Sample {
+//     x: usize,
+//     y: i64,
+// }
 
-impl std::fmt::Debug for Sample {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Sample")
-            .field("x", &self.x)
-            .field("y", &self.y)
-            .finish()
-    }
-}
+// impl std::fmt::Debug for Sample {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("Sample")
+//             .field("x", &self.x)
+//             .field("y", &self.y)
+//             .finish()
+//     }
+// }
 
 #[test]
 fn new_connection_object() {
@@ -53,7 +53,7 @@ fn search_function() {
     f.execute().unwrap();
     println!("{:#?}", f.get("FUNCTIONS"));
     if let Value::Table(functions) = f.get("FUNCTIONS").unwrap() {
-        for row in functions {
+        for row in functions.into_iter() {
             if let Value::Structure(s) = row {
                 println!("{:#?}", s.get("FUNCNAME"));
             }

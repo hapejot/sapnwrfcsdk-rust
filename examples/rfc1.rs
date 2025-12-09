@@ -1,6 +1,6 @@
 use env_logger;
 use env_logger::Env;
-use librfc_rust::{Connection, Value};
+use librfc_rust::{value::Value, connection::Connection};
 use log::info;
 
 fn main() -> Result<(), String> {
@@ -17,7 +17,7 @@ fn main() -> Result<(), String> {
     f.execute()?;
     info!("{:?}", f.get("LINE"));
     if let Value::Table(functions) = f.get("LINE")? {
-        for row in functions {
+        for row in functions.into_iter() {
             if let Value::Structure(s) = row {
                 info!("{:2} {}", s.get("TDFORMAT")?, s.get("TDLINE")?);
             }

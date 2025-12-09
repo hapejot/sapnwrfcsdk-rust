@@ -1,6 +1,6 @@
 use std::io::{stdout, Write};
 
-use librfc_rust::{Connection, Value};
+use librfc_rust::{connection::Connection, value::Value};
 use env_logger;
 use env_logger::Env;
 use clap::Parser;
@@ -30,7 +30,7 @@ fn main() -> Result<(), String>{
     f.set("OBJECT", args.object.to_uppercase().as_str())?;
     f.execute()?;
     if let Value::Table(functions) = f.get("LINE")? {
-        for row in functions {
+        for row in functions.into_iter() {
             if let Value::Structure(s) = row {
                 let format = format!("{:2}", s.get("TDFORMAT")?.to_string());
                 let line = format!("{:}", s.get("TDLINE")?.to_string());

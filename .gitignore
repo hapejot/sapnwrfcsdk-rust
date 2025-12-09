@@ -2,3 +2,6 @@ nwrfcsdk-*
 target
 clang+*
 sapnwrfc.ini
+*.trc
+*.log
+out
