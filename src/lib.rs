@@ -7,9 +7,13 @@ use log::{info, trace};
 use std::{fmt::Display, sync::Mutex};
 use string::SapString;
 
-use crate::librfc::{
-    RfcAppendNewRow, RfcCreateStructure, RfcCreateTable, RfcGetFieldCount, RfcGetFieldDescByIndex, RfcSetChars, RfcSetStructure, RfcSetTable, RfcSetXString, RFC_DATA_CONTAINER, RFC_ERROR_INFO, RFC_FIELD_DESC, RFC_PARAMETER_DESC, RFC_TYPE_DESC_HANDLE, _RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_STRING, _RFCTYPE_RFCTYPE_STRUCTURE, _RFCTYPE_RFCTYPE_TABLE, _RFC_FIELD_DESC, _RFC_TYPE_DESC_HANDLE
-};
+
+pub use connection::{Connection};
+pub use value::Value;
+
+use crate::{librfc::{
+    _RFC_FIELD_DESC, _RFC_TYPE_DESC_HANDLE, _RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_STRING, _RFCTYPE_RFCTYPE_STRUCTURE, _RFCTYPE_RFCTYPE_TABLE, RFC_DATA_CONTAINER, RFC_ERROR_INFO, RFC_FIELD_DESC, RFC_PARAMETER_DESC, RFC_TYPE_DESC_HANDLE, RfcAppendNewRow, RfcCreateStructure, RfcCreateTable, RfcGetFieldCount, RfcGetFieldDescByIndex, RfcSetChars, RfcSetStructure, RfcSetTable, RfcSetXString
+}};
 
 lazy_static! {
     static ref CONNECT_COUNT: Mutex<i32> = Mutex::new(0);
@@ -18,6 +22,10 @@ lazy_static! {
 fn any_to_string<T: Display>(value: T) -> String {
     value.to_string()
 }
+
+
+
+
 #[allow(dead_code)]
 mod librfc {
     #[repr(i32)]
