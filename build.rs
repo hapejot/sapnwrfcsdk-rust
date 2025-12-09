@@ -100,8 +100,16 @@ fn copy_dll(dest_path: &PathBuf, name: &str, output_path: &PathBuf) {
 
 fn get_output_path() -> PathBuf {
     //<root or manifest path>/target/<profile>/
-    // let manifest_dir_string = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let build_type = env::var("PROFILE").unwrap();
-    let path = Path::new("target").join(build_type);
-    path
+    // Use OUT_DIR to find the actual target directory, which works for both
+    // direct builds and when used as a dependency
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_path = Path::new(&out_dir);
+    
+    // OUT_DIR is something like: target/<profile>/build/<crate>-<hash>/out
+    // We need to go up to target/<profile>
+    out_path
+        .ancestors()
+        .nth(3)
+        .expect("Could not find target/<profile> directory")
+        .to_path_buf()
 }
