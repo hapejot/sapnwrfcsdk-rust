@@ -88,6 +88,7 @@ fn copy_dll(dest_path: &PathBuf, name: &str, output_path: &PathBuf) {
         "file {:} does not exist",
         src1.to_str().unwrap()
     );
+    println!("cargo:warning=Current directory: {:?}", env::current_dir().unwrap());
     let dst1 = output_path.join(name);
     assert!(
         output_path.exists(),
