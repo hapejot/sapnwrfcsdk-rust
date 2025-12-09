@@ -10,6 +10,8 @@ use string::SapString;
 
 pub use connection::{Connection};
 pub use value::Value;
+pub use function::Function;
+
 
 use crate::{librfc::{
     _RFC_FIELD_DESC, _RFC_TYPE_DESC_HANDLE, _RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_STRING, _RFCTYPE_RFCTYPE_STRUCTURE, _RFCTYPE_RFCTYPE_TABLE, RFC_DATA_CONTAINER, RFC_ERROR_INFO, RFC_FIELD_DESC, RFC_PARAMETER_DESC, RFC_TYPE_DESC_HANDLE, RfcAppendNewRow, RfcCreateStructure, RfcCreateTable, RfcGetFieldCount, RfcGetFieldDescByIndex, RfcSetChars, RfcSetStructure, RfcSetTable, RfcSetXString
