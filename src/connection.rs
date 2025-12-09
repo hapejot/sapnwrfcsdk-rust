@@ -3,8 +3,9 @@ use log::trace;
 use crate::{
     any_to_string, error_info, function::Function, librfc::RfcCloseConnection,
     librfc::RfcCreateFunction, librfc::RfcGetFunctionDesc, librfc::RfcOpenConnection,
-    librfc::RFC_CONNECTION_HANDLE, librfc::_RFC_CONNECTION_HANDLE,
+    librfc::RfcSetIniPath, librfc::RFC_CONNECTION_HANDLE, librfc::_RFC_CONNECTION_HANDLE,
     librfc::_RFC_CONNECTION_PARAMETER, rfc_param::RfcParam, string::SapString, CONNECT_COUNT,
+    INI_PATH_INITIALIZED,
 };
 
 pub struct Connection {
@@ -61,6 +62,24 @@ impl Connection {
     /// # Errors
     /// * Returns an error message if the connection fails, which can be caused by invalid parameters   
     pub fn connect(mut self) -> Result<Self, String> {
+        // Initialize INI path if RFC_INI environment variable is set (only once)
+        let mut ini_initialized = INI_PATH_INITIALIZED.lock().map_err(any_to_string)?;
+        if !*ini_initialized {
+            if let Ok(rfc_ini_path) = std::env::var("RFC_INI") {
+                let ini_path = SapString::from(rfc_ini_path);
+                let mut err_info = error_info();
+                unsafe {
+                    RfcSetIniPath(ini_path.raw_pointer(), &mut err_info);
+                    if err_info.code != 0 {
+                        return Err(String::from(&SapString::from(err_info.message.as_slice())));
+                    }
+                }
+                trace!("RFC INI path set to: {:?}", ini_path);
+            }
+            *ini_initialized = true;
+        }
+        drop(ini_initialized);
+
         let mut x = CONNECT_COUNT.lock().map_err(any_to_string)?;
         let ps = self
             .params

@@ -19,6 +19,7 @@ use crate::{librfc::{
 
 lazy_static! {
     static ref CONNECT_COUNT: Mutex<i32> = Mutex::new(0);
+    static ref INI_PATH_INITIALIZED: Mutex<bool> = Mutex::new(false);
 }
 
 fn any_to_string<T: Display>(value: T) -> String {
