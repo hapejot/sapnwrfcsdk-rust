@@ -1,3 +1,5 @@
+use core::error;
+
 use log::{error, info, trace};
 use serde::{
     ser::{self, SerializeMap},
@@ -5,9 +7,28 @@ use serde::{
 };
 
 use crate::{
-    error_info, librfc::{
-        _RFC_DIRECTION_RFC_CHANGING as RFC_DIRECTION_RFC_CHANGING, _RFC_DIRECTION_RFC_EXPORT as RFC_DIRECTION_RFC_EXPORT, _RFC_DIRECTION_RFC_IMPORT as RFC_DIRECTION_RFC_IMPORT, _RFC_DIRECTION_RFC_TABLES as RFC_DIRECTION_RFC_TABLES, _RFCTYPE_RFCTYPE_CHAR as RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_INT as RFCTYPE_RFCTYPE_INT, _RFCTYPE_RFCTYPE_STRING as RFCTYPE_RFCTYPE_STRING, _RFCTYPE_RFCTYPE_STRUCTURE as RFCTYPE_RFCTYPE_STRUCTURE, _RFCTYPE_RFCTYPE_TABLE as RFCTYPE_RFCTYPE_TABLE, RFC_CONNECTION_HANDLE, RFC_DATA_CONTAINER, RFC_FUNCTION_DESC_HANDLE, RFC_FUNCTION_HANDLE, RFC_INT, RFC_STRUCTURE_HANDLE, RFC_TABLE_HANDLE, RFC_TYPE_DESC_HANDLE, RfcDestroyFunction, RfcDestroyFunctionDesc, RfcGetChars, RfcGetInt, RfcGetParameterCount, RfcGetParameterDescByIndex, RfcGetParameterDescByName, RfcGetString, RfcGetStringLength, RfcGetStructure, RfcGetTable, RfcGetXString, RfcInvoke, RfcType
-    }, parameter_description, set_chars, set_chars_from_str, set_structure_from_type_handle, set_table_from_type_handle, set_xstring_from_str, string::SapString, structure::SapStructure, table, value::Value
+    error_info,
+    librfc::{
+        RfcDestroyFunction, RfcDestroyFunctionDesc, RfcGetChars, RfcGetInt, RfcGetParameterCount,
+        RfcGetParameterDescByIndex, RfcGetParameterDescByName, RfcGetString, RfcGetStringLength,
+        RfcGetStructure, RfcGetTable, RfcGetXString, RfcInvoke, RfcType, RFC_CONNECTION_HANDLE,
+        RFC_DATA_CONTAINER, RFC_FUNCTION_DESC_HANDLE, RFC_FUNCTION_HANDLE, RFC_INT,
+        RFC_STRUCTURE_HANDLE, RFC_TABLE_HANDLE, RFC_TYPE_DESC_HANDLE,
+        _RFCTYPE_RFCTYPE_CHAR as RFCTYPE_RFCTYPE_CHAR, _RFCTYPE_RFCTYPE_INT as RFCTYPE_RFCTYPE_INT,
+        _RFCTYPE_RFCTYPE_STRING as RFCTYPE_RFCTYPE_STRING,
+        _RFCTYPE_RFCTYPE_STRUCTURE as RFCTYPE_RFCTYPE_STRUCTURE,
+        _RFCTYPE_RFCTYPE_TABLE as RFCTYPE_RFCTYPE_TABLE,
+        _RFC_DIRECTION_RFC_CHANGING as RFC_DIRECTION_RFC_CHANGING,
+        _RFC_DIRECTION_RFC_EXPORT as RFC_DIRECTION_RFC_EXPORT,
+        _RFC_DIRECTION_RFC_IMPORT as RFC_DIRECTION_RFC_IMPORT,
+        _RFC_DIRECTION_RFC_TABLES as RFC_DIRECTION_RFC_TABLES,
+    },
+    parameter_description, set_chars, set_chars_from_str, set_structure_from_type_handle,
+    set_table_from_type_handle, set_xstring_from_str,
+    string::SapString,
+    structure::SapStructure,
+    table,
+    value::Value,
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -117,6 +138,13 @@ impl Function {
         unsafe {
             let rc = RfcInvoke(self.cn, self.fh as *mut RFC_DATA_CONTAINER, &mut errorInfo);
             if errorInfo.code != 0 {
+                error!(
+                    "{} {} {} {} {}", errorInfo.code,
+                    String::from(&SapString::from(errorInfo.abapMsgClass.as_slice())),
+                    String::from(&SapString::from(errorInfo.abapMsgType.as_slice())),
+                    String::from(&SapString::from(errorInfo.abapMsgNumber.as_slice())),
+                    String::from(&SapString::from(errorInfo.message.as_slice()))
+                );
                 return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
             }
             assert_eq!(0, rc);
@@ -188,7 +216,20 @@ impl Function {
             }
             RfcType::String => {
                 trace!("getting string value for {:?}", name);
-                let mut buffer = vec![0; 5000];
+                let mut strlen = 0u32;
+                let mut buf0 = [0; 5];
+                let _rc = unsafe {
+                    RfcGetString(
+                        self.fh,
+                        name.raw_pointer(),
+                        buf0.as_mut_ptr(),
+                        buf0.len() as u32,
+                        &mut strlen,
+                        &mut errorInfo,
+                    )
+                };
+                let mut buffer = vec![0; strlen as usize + 1];
+
                 let rc = unsafe {
                     RfcGetString(
                         self.fh,

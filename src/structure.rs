@@ -1,6 +1,6 @@
+use log::error;
 use log::trace;
 use serde::{ser::SerializeMap, Serialize};
-use log::error;
 
 use crate::{
     error_info, field_descriptor,
@@ -126,7 +126,11 @@ impl SapStructure {
         if rc != 0 {
             return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
         }
-        trace!("field description: {:} uc-length: {}", fieldDescr.type_, fieldDescr.ucLength);
+        trace!(
+            "field description: {:} uc-length: {}",
+            fieldDescr.type_,
+            fieldDescr.ucLength
+        );
         assert_eq!(0, rc);
         match RfcType::from(fieldDescr.type_) {
             RfcType::Char => {
@@ -266,7 +270,19 @@ impl SapStructure {
                 Ok(Value::Structure(SapStructure::new(structHandle, true)?))
             }
             RfcType::String => {
-                let mut buffer = vec![0; 5000];
+                let mut strlen = 0u32;
+                let mut buf0 = [0;5];
+                let _rc = unsafe {
+                    RfcGetString(
+                        self.handle,
+                        sap_name.raw_pointer(),
+                        buf0.as_mut_ptr(),
+                        buf0.len() as u32,
+                        &mut strlen,
+                        &mut errorInfo,
+                    )
+                };
+                let mut buffer = vec![0; strlen as usize + 1];
                 let rc = unsafe {
                     RfcGetString(
                         self.handle,
