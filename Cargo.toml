@@ -5,17 +5,32 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+# Kommandozeilen-Werkzeug sap-rfc-call (CLI, YAML-Skripte, Logging-Ausgabe).
+# Nur für die Binary nötig; die Library selbst bleibt schlank.
+cli = ["dep:clap", "dep:env_logger", "dep:serde_yaml"]
+
+[[bin]]
+name = "sap-rfc-call"
+path = "src/bin/sap-rfc-call.rs"
+required-features = ["cli"]
+
 [build-dependencies]
 bindgen = { version = "*" }
 
 [dependencies]
-clap = { version = "4.5.41", features = ["derive"] }
 cty = "*"
-env_logger = "*"
-lazy_static = "*"
 log = "*"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-serde_yaml = { git = "https://github.com/hapejot/serde-yaml.git", version = "0.9.35" }
-tracing = "0.1.41"
-ucs2 = "*"
+
+# Nur für das Feature "cli"
+clap = { version = "4.5.41", features = ["derive"], optional = true }
+env_logger = { version = "*", optional = true }
+serde_yaml = { git = "https://github.com/hapejot/serde-yaml.git", version = "0.9.35", optional = true }
+
+[dev-dependencies]
+# Beispiele und Tests (cargo run --example ..., cargo test)
+clap = { version = "4.5.41", features = ["derive"] }
+env_logger = "*"

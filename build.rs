@@ -7,23 +7,17 @@ fn main() {
     let sap_dir =
         PathBuf::from(env::var("SAPNWRFCSDK").expect("SAPNWRFCSDK environment variable not set"));
 
-    // Tell Cargo that if the given file changes, to rerun this build script.
-    // println!("cargo:rerun-if-changed=src/hello.c");
-    // println!("cargo:rustc-link-lib=libsapucum");
     println!("cargo:rustc-link-lib=sapnwrfc");
-    // Use the `cc` crate to build a C file and statically link it.
-    //     cc::Build::new()
-    //         .file("src/hello.c")
-    //         .compile("hello");
 
     let bindings = plattform_defines(&sap_dir)
         .clang_arg("-DSAPwithUNICODE")
+        // Libc-Funktionen (memcmp, strlen, ...) aus den Headern werden nicht gebraucht und
+        // erzeugen Warnungen ("suspicious runtime symbol"); daher ausschließen.
+        .blocklist_function("^(memcmp|memcpy|memmove|memset|strlen)$")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Finish the builder and generate the bindings.
         .generate()
-        // Unwrap the Result and panic on failure.
         .expect("Unable to generate bindings");
 
     // Write the bindings to the $OUT_DIR/bindings.rs file.
@@ -34,21 +28,22 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn plattform_defines(sap_dir: &str) -> bindgen::Builder {
-    println!("cargo:rustc-link-search=native={}/lib", sap_dir);
-    bindgen::Builder::default().header("{}/include/sapnwrfc.h")
+fn plattform_defines(sap_dir: &Path) -> bindgen::Builder {
+    println!(
+        "cargo:rustc-link-search=native={}",
+        sap_dir.join("lib").display()
+    );
+    bindgen::Builder::default().header(sap_dir.join("include").join("sapnwrfc.h").to_string_lossy())
 }
 
 #[cfg(target_os = "windows")]
-fn plattform_defines(sap_dir: &PathBuf) -> bindgen::Builder {
+fn plattform_defines(sap_dir: &Path) -> bindgen::Builder {
     println!(
         "cargo:rustc-link-search=native={}",
-        sap_dir.join("lib").to_str().unwrap()
+        sap_dir.join("lib").display()
     );
     plattform_copy(sap_dir);
     bindgen::Builder::default()
-        // The input header we would like to generate
-        // bindings for.
         .clang_arg("-DSAPonNT")
         .clang_arg("-D_CRT_NON_CONFORMING_SWPRINTFS")
         .clang_arg("-D_CRT_SECURE_NO_DEPRECATE")
@@ -63,14 +58,14 @@ fn plattform_defines(sap_dir: &PathBuf) -> bindgen::Builder {
         .clang_arg("-D_UNICODE")
         .clang_arg("-DSAPwithTHREADS")
         .clang_arg("-D_ATL_ALLOW_CHAR_UNSIGNED")
-        .header(sap_dir.join("include").join("sapnwrfc.h").to_str().unwrap())
+        .header(sap_dir.join("include").join("sapnwrfc.h").to_string_lossy())
 }
 
 #[cfg(target_os = "linux")]
-fn plattform_copy(sap_dir: &str) {}
+fn plattform_copy(_sap_dir: &Path) {}
 
 #[cfg(target_os = "windows")]
-fn plattform_copy(sap_dir: &PathBuf) {
+fn plattform_copy(sap_dir: &Path) {
     let output_path = get_output_path();
     let dest_path = sap_dir.join("lib");
 
@@ -81,33 +76,26 @@ fn plattform_copy(sap_dir: &PathBuf) {
     copy_dll(&dest_path, "libsapucum.dll", &output_path);
 }
 
-fn copy_dll(dest_path: &PathBuf, name: &str, output_path: &PathBuf) {
-    let src1 = dest_path.join(name);
-    assert!(
-        src1.exists(),
-        "file {:} does not exist",
-        src1.to_str().unwrap()
-    );
-    println!("cargo:warning=Current directory: {:?}", env::current_dir().unwrap());
-    let dst1 = output_path.join(name);
+#[cfg(target_os = "windows")]
+fn copy_dll(dest_path: &Path, name: &str, output_path: &Path) {
+    let src = dest_path.join(name);
+    assert!(src.exists(), "file {} does not exist", src.display());
+    let dst = output_path.join(name);
     assert!(
         output_path.exists(),
         "path {} doesnt exist",
-        output_path.to_str().unwrap()
+        output_path.display()
     );
-    std::fs::copy(&src1, &dst1).expect(format!("copy {:?} to {:?}", &src1, &dst1).as_str());
+    std::fs::copy(&src, &dst)
+        .unwrap_or_else(|e| panic!("copy {} to {} failed: {e}", src.display(), dst.display()));
 }
 
+#[cfg(target_os = "windows")]
 fn get_output_path() -> PathBuf {
-    //<root or manifest path>/target/<profile>/
-    // Use OUT_DIR to find the actual target directory, which works for both
-    // direct builds and when used as a dependency
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let out_path = Path::new(&out_dir);
-    
     // OUT_DIR is something like: target/<profile>/build/<crate>-<hash>/out
     // We need to go up to target/<profile>
-    out_path
+    let out_dir = env::var("OUT_DIR").unwrap();
+    Path::new(&out_dir)
         .ancestors()
         .nth(3)
         .expect("Could not find target/<profile> directory")

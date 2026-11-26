@@ -1,9 +1,8 @@
-use env_logger;
 use env_logger::Env;
 use librfc_rust::{value::Value, connection::Connection};
 use log::info;
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp(None)
         .init();

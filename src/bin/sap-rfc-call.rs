@@ -2,6 +2,7 @@ use clap::Parser;
 use env_logger::Env;
 use librfc_rust::connection::Connection;
 use log::{info, trace};
+use std::io::Write;
 
 #[derive(Debug, Parser)]
 struct CommandLineArgs {
@@ -9,7 +10,7 @@ struct CommandLineArgs {
     pub script_name: Option<String>,
 }
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let args = CommandLineArgs {
     // rfc_destination: "sap".to_string(),
     // function_name: "RFC_SYSTEM_INFO".to_string(),
@@ -52,29 +53,37 @@ fn main() -> Result<(), String> {
     }
     .map_err(|e| e.to_string())?;
 
-    if let serde_json::Value::Array(steps) = script {
-        info!("connecting");
-        let c = Connection::new()
-            .destination(&args.rfc_destination)
-            .connect()?;
+    let steps = match script {
+        serde_json::Value::Array(steps) => steps,
+        _ => return Err("Skript muss eine Liste von Schritten sein".into()),
+    };
 
-        assert!(c.is_connected());
+    info!("connecting");
+    let c = Connection::new()
+        .destination(&args.rfc_destination)
+        .connect()?;
 
-        for step in steps {
-            let function_name = step
-                .get("function_name")
-                .and_then(|f| f.as_str())
-                .ok_or("Function name not found in step".to_string())?;
-            info!("calling function {function_name}");
-            let f = c.function(function_name)?;
-            if let Some(p) = step.get("parameters") {
-                f.set_parameters(&p)?;
-            }
-            f.execute()?;
-            trace!("serializing result");
-            serde_json::to_writer(std::io::stdout(), &f).map_err(|x| x.to_string())?;
-            trace!("serializing result done");
+    let mut out = std::io::stdout().lock();
+    for (index, step) in steps.iter().enumerate() {
+        let function_name = step
+            .get("function_name")
+            .and_then(|f| f.as_str())
+            .map(str::to_uppercase)
+            .ok_or_else(|| format!("Schritt {index}: function_name fehlt"))?;
+        info!("calling function {function_name}");
+        let f = c
+            .function(&function_name)
+            .map_err(|e| format!("Schritt {index} ({function_name}): {e}"))?;
+        if let Some(p) = step.get("parameters") {
+            f.set_parameters(p)
+                .map_err(|e| format!("Schritt {index} ({function_name}): {e}"))?;
         }
+        f.execute()
+            .map_err(|e| format!("Schritt {index} ({function_name}): {e}"))?;
+        trace!("serializing result");
+        serde_json::to_writer(&mut out, &f)?;
+        writeln!(out)?;
+        trace!("serializing result done");
     }
     Ok(())
 }

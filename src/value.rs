@@ -37,9 +37,9 @@ impl Display for Value {
         match self {
             Value::String(s) => write!(f, "{}", String::from(s)),
             Value::Int(i) => write!(f, "{i}"),
-            Value::Table(_) => todo!(),
-            Value::Structure(_) => todo!(),
-            Value::Empty => todo!(),
+            Value::Table(_) => write!(f, "<table>"),
+            Value::Structure(_) => write!(f, "<structure>"),
+            Value::Empty => Ok(()),
         }
     }
 }

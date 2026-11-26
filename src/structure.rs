@@ -1,14 +1,13 @@
-use log::error;
 use log::trace;
 use serde::{ser::SerializeMap, Serialize};
 
 use crate::{
-    error_info, field_descriptor,
+    check_ptr, check_rc, error::RfcError, error_info, field_descriptor, RfcResult,
     librfc::{
-        RfcCreateStructure, RfcDescribeType, RfcDestroyStructure, RfcGetChars, RfcGetFieldCount,
-        RfcGetFieldDescByIndex, RfcGetFieldDescByName, RfcGetInt, RfcGetInt1, RfcGetString,
-        RfcGetStructure, RfcGetTable, RfcType, RFC_STRUCTURE_HANDLE, RFC_TABLE_HANDLE,
-        _RFCTYPE_RFCTYPE_CHAR as RFCTYPE_RFCTYPE_CHAR,
+        RfcCreateStructure, RfcDescribeType, RfcDestroyStructure, RfcGetBytes, RfcGetChars,
+        RfcGetFieldCount, RfcGetFieldDescByIndex, RfcGetFieldDescByName, RfcGetInt, RfcGetInt1,
+        RfcGetString, RfcGetStructure, RfcGetTable, RfcType, RFC_STRUCTURE_HANDLE,
+        RFC_TABLE_HANDLE, RFC_TYPE_DESC_HANDLE,
     },
     set_chars,
     string::SapString,
@@ -21,13 +20,13 @@ pub struct SapStructure {
     dependent: bool,
     fields: Vec<String>,
 }
+
 impl Drop for SapStructure {
-    #[tracing::instrument]
     fn drop(&mut self) {
         if !self.dependent {
-            let mut errorInfo = error_info();
+            let mut ei = error_info();
             unsafe {
-                RfcDestroyStructure(self.handle, &mut errorInfo);
+                RfcDestroyStructure(self.handle, &mut ei);
             }
         }
     }
@@ -40,18 +39,10 @@ impl Serialize for SapStructure {
     {
         trace!("serializing structure");
         let mut map = serializer.serialize_map(Some(self.fields.len()))?;
-        let n = self.fields.len();
-        for idx in 0..n {
-            trace!("serializing field: {idx}/{n} {}", &self.fields[idx]);
-            match self.get(&self.fields[idx]) {
-                Ok(value) => {
-                    let field = &self.fields[idx];
-                    map.serialize_entry(field, &value)?;
-                }
-                Err(e) => {
-                    error!("failed to deserialize field {}: {}", &self.fields[idx], e);
-                }
-            }
+        for field in &self.fields {
+            trace!("serializing field: {field}");
+            let value = self.get(field.as_str()).map_err(serde::ser::Error::custom)?;
+            map.serialize_entry(field, &value)?;
         }
         trace!("serializing structure done");
         map.end()
@@ -59,29 +50,22 @@ impl Serialize for SapStructure {
 }
 
 impl SapStructure {
-    pub fn new(handle: RFC_STRUCTURE_HANDLE, dependent: bool) -> Result<Self, String> {
-        let mut errorInfo = error_info();
+    pub fn new(handle: RFC_STRUCTURE_HANDLE, dependent: bool) -> RfcResult<Self> {
+        let mut ei = error_info();
         let mut count: cty::c_uint = 0;
         let mut fields = vec![];
-        unsafe {
-            let type_handle = RfcDescribeType(handle, &mut errorInfo);
-            if errorInfo.code != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
-            let rc = RfcGetFieldCount(type_handle, &mut count, &mut errorInfo);
-            if errorInfo.code != 0 || rc != 0 {
-                return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-            }
 
-            for idx in 0..count {
-                let mut fieldDescr = field_descriptor();
-                let rc = RfcGetFieldDescByIndex(type_handle, idx, &mut fieldDescr, &mut errorInfo);
-                if errorInfo.code != 0 || rc != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                let fld = String::from(&SapString::from(fieldDescr.name.as_slice()));
-                fields.push(fld);
-            }
+        let type_handle = unsafe { RfcDescribeType(handle, &mut ei) };
+        check_ptr(type_handle, &ei, "RfcDescribeType")?;
+        let rc = unsafe { RfcGetFieldCount(type_handle, &mut count, &mut ei) };
+        check_rc(rc, &ei)?;
+
+        for idx in 0..count {
+            let mut field_descr = field_descriptor();
+            let mut ei = error_info();
+            let rc = unsafe { RfcGetFieldDescByIndex(type_handle, idx, &mut field_descr, &mut ei) };
+            check_rc(rc, &ei)?;
+            fields.push(String::from(&SapString::from(field_descr.name.as_slice())));
         }
 
         Ok(Self {
@@ -91,198 +75,123 @@ impl SapStructure {
         })
     }
 
-    pub fn set<V>(&self, name: &str, value: V) -> Result<(), String>
+    pub fn set<V>(&self, name: &str, value: V) -> RfcResult<()>
     where
         V: Into<Value>,
     {
-        let v: Value = value.into();
-        match v {
-            Value::String(sap_string) => set_chars(self.handle, name, sap_string)?,
-            _ => todo!(),
+        match value.into() {
+            Value::String(sap_string) => set_chars(self.handle, name, sap_string),
+            _ => Err(RfcError::InvalidInput(format!(
+                "Nur Strings können in Feld {name} gesetzt werden"
+            ))),
         }
-        Ok(())
     }
 
-    pub fn get<S>(&self, name: S) -> Result<Value, String>
+    pub fn get<S>(&self, name: S) -> RfcResult<Value>
     where
         S: Into<String>,
     {
-        let mut errorInfo = error_info();
-        let mut fieldDescr = field_descriptor();
         let str_name: String = name.into();
-        let sap_name = SapString::from(str_name);
-        let type_handle = unsafe { RfcDescribeType(self.handle, &mut errorInfo) };
-        if errorInfo.code != 0 {
-            return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-        }
+        let sap_name = SapString::from(str_name.as_str());
+
+        let mut ei = error_info();
+        let type_handle = unsafe { RfcDescribeType(self.handle, &mut ei) };
+        check_ptr(type_handle, &ei, "RfcDescribeType")?;
+
+        let mut field_descr = field_descriptor();
+        let mut ei = error_info();
         let rc = unsafe {
-            RfcGetFieldDescByName(
-                type_handle,
-                sap_name.raw_pointer(),
-                &mut fieldDescr,
-                &mut errorInfo,
-            )
+            RfcGetFieldDescByName(type_handle, sap_name.raw_pointer(), &mut field_descr, &mut ei)
         };
-        if rc != 0 {
-            return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-        }
+        check_rc(rc, &ei)?;
         trace!(
             "field description: {:} uc-length: {}",
-            fieldDescr.type_,
-            fieldDescr.ucLength
+            field_descr.type_,
+            field_descr.ucLength
         );
-        assert_eq!(0, rc);
-        match RfcType::from(fieldDescr.type_) {
-            RfcType::Char => {
-                let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
+
+        match RfcType::from(field_descr.type_) {
+            RfcType::Char | RfcType::Date | RfcType::Time => {
+                let mut buffer = vec![0; field_descr.ucLength as usize + 1];
+                let mut ei = error_info();
                 let rc = unsafe {
                     RfcGetChars(
                         self.handle,
                         sap_name.raw_pointer(),
                         buffer.as_mut_ptr(),
-                        fieldDescr.ucLength,
-                        &mut errorInfo,
+                        field_descr.ucLength,
+                        &mut ei,
                     )
                 };
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
+                check_rc(rc, &ei)?;
                 Ok(Value::String(SapString::from(buffer.as_slice())))
             }
-            RfcType::Date => {
-                let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
-                let rc = unsafe {
-                    RfcGetChars(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        buffer.as_mut_ptr(),
-                        fieldDescr.ucLength,
-                        &mut errorInfo,
-                    )
-                };
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
-                Ok(Value::String(SapString::from(buffer.as_slice())))
-            }
-            RfcType::Time => {
-                let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
-                let rc = unsafe {
-                    RfcGetChars(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        buffer.as_mut_ptr(),
-                        fieldDescr.ucLength,
-                        &mut errorInfo,
-                    )
-                };
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
-                Ok(Value::String(SapString::from(buffer.as_slice())))
-            }
-            RfcType::Bcd => {
-                let mut buffer = vec![0; fieldDescr.ucLength as usize + 3];
+            RfcType::Bcd | RfcType::Num => {
+                let mut buffer = vec![0; field_descr.ucLength as usize + 3];
+                let mut ei = error_info();
                 let rc = unsafe {
                     RfcGetChars(
                         self.handle,
                         sap_name.raw_pointer(),
                         buffer.as_mut_ptr(),
                         buffer.len() as u32,
-                        &mut errorInfo,
+                        &mut ei,
                     )
                 };
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
-                Ok(Value::String(SapString::from(buffer.as_slice())))
-            }
-            RfcType::Num => {
-                let mut buffer = vec![0; fieldDescr.ucLength as usize + 3];
-                let rc = unsafe {
-                    RfcGetChars(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        buffer.as_mut_ptr(),
-                        buffer.len() as u32,
-                        &mut errorInfo,
-                    )
-                };
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                assert_eq!(0, rc);
+                check_rc(rc, &ei)?;
                 Ok(Value::String(SapString::from(buffer.as_slice())))
             }
             RfcType::Int1 => {
                 let mut value = 0;
-                unsafe {
-                    RfcGetInt1(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        &mut value,
-                        &mut errorInfo,
-                    )
+                let mut ei = error_info();
+                let rc = unsafe {
+                    RfcGetInt1(self.handle, sap_name.raw_pointer(), &mut value, &mut ei)
                 };
+                check_rc(rc, &ei)?;
                 Ok(Value::Int(value as _))
             }
-            RfcType::Int2 => {
+            RfcType::Int2 | RfcType::Int => {
                 let mut value = 0;
-                unsafe {
-                    RfcGetInt(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        &mut value,
-                        &mut errorInfo,
-                    )
-                };
-                Ok(Value::Int(value as _))
-            }
-            RfcType::Int => {
-                let mut value = 0;
-                unsafe {
-                    RfcGetInt(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        &mut value,
-                        &mut errorInfo,
-                    )
-                };
+                let mut ei = error_info();
+                let rc = unsafe { RfcGetInt(self.handle, sap_name.raw_pointer(), &mut value, &mut ei) };
+                check_rc(rc, &ei)?;
                 Ok(Value::Int(value as _))
             }
             RfcType::Structure => {
-                let mut structHandle = 0 as RFC_STRUCTURE_HANDLE;
+                let mut struct_handle: RFC_STRUCTURE_HANDLE = std::ptr::null_mut();
+                let mut ei = error_info();
                 let rc = unsafe {
                     RfcGetStructure(
                         self.handle,
                         sap_name.raw_pointer(),
-                        &mut structHandle,
-                        &mut errorInfo,
+                        &mut struct_handle,
+                        &mut ei,
                     )
                 };
-                if rc != 0 || errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
-                Ok(Value::Structure(SapStructure::new(structHandle, true)?))
+                check_rc(rc, &ei)?;
+                Ok(Value::Structure(SapStructure::new(struct_handle, true)?))
             }
             RfcType::String => {
+                // Zweistufig: erst die Länge ermitteln, dann mit passendem Puffer lesen.
+                // Der Rückgabewert der Längenabfrage wird ignoriert, weil ein zu kleiner Puffer
+                // dort gewollt ist; entscheidend ist `strlen`. Das eigentliche Lesen wird
+                // mit frischer Fehlerinfo ausgeführt und geprüft.
                 let mut strlen = 0u32;
-                let mut buf0 = [0;5];
-                let _rc = unsafe {
+                let mut probe = [0; 5];
+                let mut ei = error_info();
+                let _ = unsafe {
                     RfcGetString(
                         self.handle,
                         sap_name.raw_pointer(),
-                        buf0.as_mut_ptr(),
-                        buf0.len() as u32,
+                        probe.as_mut_ptr(),
+                        probe.len() as u32,
                         &mut strlen,
-                        &mut errorInfo,
+                        &mut ei,
                     )
                 };
+
                 let mut buffer = vec![0; strlen as usize + 1];
+                let mut ei = error_info();
                 let rc = unsafe {
                     RfcGetString(
                         self.handle,
@@ -290,94 +199,73 @@ impl SapStructure {
                         buffer.as_mut_ptr(),
                         buffer.len() as u32,
                         std::ptr::null_mut(),
-                        &mut errorInfo,
+                        &mut ei,
                     )
                 };
-
-                if errorInfo.code != 0 {
-                    let s = String::from(&SapString::from(errorInfo.message.as_slice()));
-                    return Err(s);
-                }
-                assert_eq!(0, rc);
+                check_rc(rc, &ei)?;
                 Ok(Value::String(SapString::from(buffer.as_slice())))
             }
             RfcType::Table => {
                 trace!("getting table for field: {:?}", sap_name);
-                let mut table_handle = 0 as RFC_TABLE_HANDLE;
+                let mut table_handle: RFC_TABLE_HANDLE = std::ptr::null_mut();
+                let mut ei = error_info();
                 let rc = unsafe {
-                    RfcGetTable(
-                        self.handle,
-                        sap_name.raw_pointer(),
-                        &mut table_handle,
-                        &mut errorInfo,
-                    )
+                    RfcGetTable(self.handle, sap_name.raw_pointer(), &mut table_handle, &mut ei)
                 };
-                if rc != 0 || errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
+                check_rc(rc, &ei)?;
                 let t = SapTable::new(table_handle, true);
                 trace!("got table: {:?}", t);
                 Ok(Value::Table(t))
             }
-            x => Err(format!("Unsupported field type in structure: {x:?}")),
+            RfcType::Byte => {
+                let mut buffer = vec![0u8; field_descr.ucLength as usize + 3];
+                let mut ei = error_info();
+                let rc = unsafe {
+                    RfcGetBytes(
+                        self.handle,
+                        sap_name.raw_pointer(),
+                        buffer.as_mut_ptr(),
+                        buffer.len() as u32,
+                        &mut ei,
+                    )
+                };
+                check_rc(rc, &ei)?;
+                let hex: String = buffer.iter().map(|x| format!("{x:02x}")).collect();
+                Ok(Value::String(SapString::from(hex)))
+            }
+            other => Err(RfcError::UnsupportedType {
+                name: str_name,
+                type_code: match other {
+                    RfcType::Unknown(code) => code,
+                    _ => field_descr.type_,
+                },
+            }),
         }
     }
 
-    pub fn from_type(type_handle: crate::RFC_TYPE_DESC_HANDLE) -> Self {
+    /// Erzeugt eine eigenständige Struktur (wird beim Drop zerstört) zu einem Typ-Handle.
+    pub fn from_type(type_handle: RFC_TYPE_DESC_HANDLE) -> RfcResult<Self> {
         trace!("creating structure from type handle");
-        unsafe {
-            let mut errorInfo = error_info();
-            let struct_handle = RfcCreateStructure(type_handle, &mut errorInfo);
-            if errorInfo.code != 0 {
-                panic!(
-                    "Failed to create structure: {}",
-                    String::from(&SapString::from(errorInfo.message.as_slice()))
-                );
-            }
-            Self::new(struct_handle, false).unwrap()
-        }
+        let mut ei = error_info();
+        let struct_handle = unsafe { RfcCreateStructure(type_handle, &mut ei) };
+        let struct_handle = check_ptr(struct_handle, &ei, "RfcCreateStructure")?;
+        Self::new(struct_handle, false)
     }
 
     pub fn handle(&self) -> *mut crate::RFC_DATA_CONTAINER {
         self.handle
     }
 }
+
 impl std::fmt::Debug for SapStructure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut errorInfo = error_info();
-        let mut count: cty::c_uint = 0;
         let mut dbg = f.debug_struct("SapStructure");
         dbg.field("handle", &self.handle);
-        unsafe {
-            let type_handle = RfcDescribeType(self.handle, &mut errorInfo);
-            assert_eq!(errorInfo.code, 0);
-            let rc = RfcGetFieldCount(type_handle, &mut count, &mut errorInfo);
-
-            for idx in 0..count {
-                let mut fieldDescr = field_descriptor();
-                let rc = RfcGetFieldDescByIndex(type_handle, idx, &mut fieldDescr, &mut errorInfo);
-                assert_eq!(0, rc);
-                let dbg_val: Box<dyn std::fmt::Debug> = match fieldDescr.type_ {
-                    crate::_RFCTYPE_RFCTYPE_CHAR => {
-                        let mut buffer = vec![0; fieldDescr.ucLength as usize + 1];
-                        let rc = RfcGetChars(
-                            self.handle,
-                            fieldDescr.name.as_ptr(),
-                            buffer.as_mut_ptr(),
-                            fieldDescr.ucLength,
-                            &mut errorInfo,
-                        );
-                        assert_eq!(0, rc);
-                        Box::new(String::from(&SapString::from(buffer.as_slice())))
-                    }
-                    _ => Box::new(String::from("<value>")),
-                };
-                dbg.field(
-                    String::from(&SapString::from(fieldDescr.name.as_slice())).as_str(),
-                    &dbg_val,
-                );
-            }
-            assert_eq!(0, rc);
+        for name in &self.fields {
+            match self.get(name.as_str()) {
+                Ok(value) => dbg.field(name.as_str(), &value),
+                Err(e) => dbg.field(name.as_str(), &format!("<error: {e}>")),
+            };
         }
         dbg.finish()
     }

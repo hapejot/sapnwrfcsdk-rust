@@ -1,7 +1,6 @@
 use std::io::{stdout, Write};
 
 use librfc_rust::{Connection, Value};
-use env_logger;
 use env_logger::Env;
 use clap::Parser;
 
@@ -14,7 +13,7 @@ struct Args {
 }
 
 
-fn main() -> Result<(), String>{
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     env_logger::Builder::from_env(Env::default()
                         .default_filter_or("info"))
@@ -29,14 +28,15 @@ fn main() -> Result<(), String>{
     f.set("LANGU", args.language.to_uppercase().as_str())?;
     f.set("OBJECT", args.object.to_uppercase().as_str())?;
     f.execute()?;
+    let mut out = stdout().lock();
     if let Value::Table(functions) = f.get("LINE")? {
         for row in functions.into_iter() {
             if let Value::Structure(s) = row {
                 let format = format!("{:2}", s.get("TDFORMAT")?.to_string());
-                let line = format!("{:}", s.get("TDLINE")?.to_string());
-                stdout().write(format.as_bytes()).unwrap();
-                stdout().write(line.as_bytes()).unwrap();
-                stdout().write(b"\n").unwrap();
+                let line = s.get("TDLINE")?.to_string();
+                out.write_all(format.as_bytes()).map_err(|e| e.to_string())?;
+                out.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+                out.write_all(b"\n").map_err(|e| e.to_string())?;
             }
         }
     }

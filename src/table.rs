@@ -1,15 +1,17 @@
-use log::trace;
+use log::{error, trace};
 use serde::{ser::SerializeSeq, Serialize};
 
 use crate::{
-    error_info,
+    check_ptr, check_rc,
+    error::RfcError,
+    error_info, json_kind,
     librfc::{
         RfcAppendRow, RfcDescribeType, RfcDestroyTable, RfcGetCurrentRow, RfcGetRowCount,
         RfcMoveTo, RFC_TABLE_HANDLE,
     },
-    string::SapString,
     structure::SapStructure,
     value::Value,
+    RfcResult,
 };
 
 pub struct SapTable {
@@ -17,48 +19,69 @@ pub struct SapTable {
     dependent: bool,
 }
 
+/// Liest die Zeile `index` (0-basiert) einer Tabelle.
+fn read_row(handle: RFC_TABLE_HANDLE, index: u32) -> RfcResult<SapStructure> {
+    let mut ei = error_info();
+    let rc = unsafe { RfcMoveTo(handle, index, &mut ei) };
+    check_rc(rc, &ei)?;
+
+    let mut ei = error_info();
+    let struct_handle = unsafe { RfcGetCurrentRow(handle, &mut ei) };
+    let struct_handle = check_ptr(struct_handle, &ei, "RfcGetCurrentRow")?;
+    SapStructure::new(struct_handle, true)
+}
+
 impl SapTable {
     pub fn new(handle: RFC_TABLE_HANDLE, dependent: bool) -> Self {
         Self { handle, dependent }
     }
-    pub fn len(&self) -> usize {
-        unsafe {
-            let mut errorInfo = error_info();
-            let mut rowCount: u32 = 0;
-            let rc = RfcGetRowCount(self.handle, &mut rowCount, &mut errorInfo);
-            assert_eq!(0, rc);
-            rowCount as usize
-        }
+
+    /// Anzahl der Zeilen.
+    pub fn len(&self) -> RfcResult<usize> {
+        let mut ei = error_info();
+        let mut row_count: u32 = 0;
+        let rc = unsafe { RfcGetRowCount(self.handle, &mut row_count, &mut ei) };
+        check_rc(rc, &ei)?;
+        Ok(row_count as usize)
     }
 
     pub fn handle(&self) -> RFC_TABLE_HANDLE {
         self.handle
     }
 
-    pub fn add_row(&self, row: &serde_json::Value) -> Result<(), String> {
-        if let serde_json::Value::Object(obj) = row {
-            unsafe {
-                let mut errorInfo = error_info();
-                let type_handle = RfcDescribeType(self.handle, &mut errorInfo);
-                if errorInfo.code != 0 {
-                    return Err(String::from(&SapString::from(errorInfo.message.as_slice())));
-                }
+    /// Fügt eine Zeile aus einem JSON-Objekt hinzu. Alle Werte müssen Strings sein.
+    pub fn add_row(&self, row: &serde_json::Value) -> RfcResult<()> {
+        let obj = match row {
+            serde_json::Value::Object(obj) => obj,
+            other => {
+                return Err(RfcError::TypeMismatch {
+                    name: "table row".to_string(),
+                    expected: "object",
+                    found: json_kind(other),
+                })
+            }
+        };
 
-                let structure = SapStructure::from_type(type_handle);
-                for (name, value) in obj {
-                    match value {
-                        serde_json::Value::Null => todo!(),
-                        serde_json::Value::Bool(_v) => todo!(),
-                        serde_json::Value::Number(_number) => todo!(),
-                        serde_json::Value::String(v) => structure.set(name, v.as_str())?,
-                        serde_json::Value::Array(_values) => todo!(),
-                        serde_json::Value::Object(_map) => todo!(),
-                    }
+        let mut ei = error_info();
+        let type_handle = unsafe { RfcDescribeType(self.handle, &mut ei) };
+        let type_handle = check_ptr(type_handle, &ei, "RfcDescribeType")?;
+
+        let structure = SapStructure::from_type(type_handle)?;
+        for (name, value) in obj {
+            match value {
+                serde_json::Value::String(v) => structure.set(name, v.as_str())?,
+                other => {
+                    return Err(RfcError::TypeMismatch {
+                        name: name.clone(),
+                        expected: "string",
+                        found: json_kind(other),
+                    })
                 }
-                RfcAppendRow(self.handle, structure.handle(), &mut errorInfo);
             }
         }
-        Ok(())
+        let mut ei = error_info();
+        let rc = unsafe { RfcAppendRow(self.handle, structure.handle(), &mut ei) };
+        check_rc(rc, &ei)
     }
 }
 
@@ -67,14 +90,15 @@ impl Serialize for SapTable {
     where
         S: serde::Serializer,
     {
-        let len = self.len();
+        let len = self.len().map_err(serde::ser::Error::custom)?;
         trace!("Serializing SapTable with {} rows", len);
-        let mut tab = serializer.serialize_seq(Some(len))?;
-        for value in self.into_iter() {
-            tab.serialize_element(&value)?;
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        for index in 0..len {
+            let row = read_row(self.handle, index as u32).map_err(serde::ser::Error::custom)?;
+            seq.serialize_element(&Value::Structure(row))?;
         }
         trace!("Serialized SapTable with {} rows", len);
-        tab.end()
+        seq.end()
     }
 }
 
@@ -98,25 +122,24 @@ impl std::fmt::Debug for SapTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("SapTable");
         dbg.field("handle", &self.handle);
-        unsafe {
-            let mut err_info = error_info();
-            let mut row_count: u32 = 0;
-            let rc = RfcGetRowCount(self.handle, &mut row_count, &mut err_info);
-            assert_eq!(0, rc);
-            dbg.field("row-count", &Box::new(row_count) as &dyn std::fmt::Debug);
-        }
+        match self.len() {
+            Ok(row_count) => dbg.field("row-count", &row_count),
+            Err(e) => dbg.field("row-count", &format!("<error: {e}>")),
+        };
         dbg.finish()
     }
 }
 
 impl SapTableIterator {
     pub fn new(handle: RFC_TABLE_HANDLE) -> Self {
-        let lines = unsafe {
-            let mut errorInfo = error_info();
-            let mut rowCount: u32 = 0;
-            let r = RfcGetRowCount(handle, &mut rowCount, &mut errorInfo);
-            assert_eq!(0, r);
-            rowCount
+        // `IntoIterator` kann keinen Fehler melden. Schlägt die Zeilenzahl fehl, wird das
+        // geloggt und die Iteration bleibt leer. Wer Fehler sehen will, nutzt `len()`/Serialize.
+        let lines = match SapTable::new(handle, true).len() {
+            Ok(n) => n as u32,
+            Err(e) => {
+                error!("Zeilenzahl der Tabelle nicht lesbar: {e}");
+                0
+            }
         };
         Self {
             handle,
@@ -130,18 +153,17 @@ impl Iterator for SapTableIterator {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.tabix < self.lines {
-            let x = unsafe {
-                let mut errorInfo = error_info();
-                let rc = RfcMoveTo(self.handle, self.tabix, &mut errorInfo);
-                assert_eq!(0, rc);
-                let struct_handle = RfcGetCurrentRow(self.handle, &mut errorInfo);
-                self.tabix += 1;
-                SapStructure::new(struct_handle, true).unwrap()
-            };
-            Some(Value::Structure(x))
-        } else {
-            None
+        if self.tabix >= self.lines {
+            return None;
+        }
+        let index = self.tabix;
+        self.tabix += 1;
+        match read_row(self.handle, index) {
+            Ok(row) => Some(Value::Structure(row)),
+            Err(e) => {
+                error!("Zeile {index} der Tabelle nicht lesbar: {e}");
+                None
+            }
         }
     }
 }
@@ -149,9 +171,9 @@ impl Iterator for SapTableIterator {
 impl Drop for SapTable {
     fn drop(&mut self) {
         if !self.dependent {
-            let mut errorInfo = error_info();
+            let mut ei = error_info();
             unsafe {
-                RfcDestroyTable(self.handle, &mut errorInfo);
+                RfcDestroyTable(self.handle, &mut ei);
             }
         }
     }
